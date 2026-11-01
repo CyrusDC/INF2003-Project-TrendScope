@@ -63,6 +63,24 @@ class DataManager:
             return pd.read_sql(valid_views[view_name], conn)
         finally:
             conn.close()
+    # ------------------------------------------------------------------
+    # VIDEO KEYWORD SEARCH (POSTGRESQL)
+    # ------------------------------------------------------------------
+    @classmethod
+    def search_videos_with_keyword(cls, keyword):
+
+        sql = """
+            SELECT *
+            FROM search_videos_with_keyword(%s::text);
+        """
+
+        conn = cls.get_pg_connection()
+
+        try:
+            return pd.read_sql(sql,conn,params=(keyword,))
+
+        finally:
+            conn.close()
 
     # ------------------------------------------------------------------
     # RELATIONAL CRUD OPERATIONS (POSTGRESQL)

@@ -97,5 +97,40 @@ def crud():
 
     return render_template("crud.html", search_results=search_results)
 
+# ------------------------------------------------------------------
+# VIDEO KEYWORD SEARCH (VIEWER & ADMIN)
+# ------------------------------------------------------------------
+
+@app.route("/search", methods=["GET"])
+@login_required
+def search_videos():
+
+    # Get keyword entered in HTML search bar
+    keyword = request.args.get("keyword", "").strip()
+
+    # Initialise results
+    videos = []
+    error = None
+
+    if keyword:
+        try:
+            # Search PostgreSQL using DataManager
+            df = DataManager.search_videos_with_keyword(keyword)
+
+            # Convert DataFrame into dictionaries for HTML
+            videos = df.to_dict(orient="records")
+
+        except Exception:
+            app.logger.exception("Video keyword search failed")
+            error = "Unable to search videos. Please try again."
+
+    # Display results in search.html
+    return render_template(
+        "search.html",
+        keyword=keyword,
+        videos=videos,
+        error=error
+    )
+
 if __name__ == "__main__":
     app.run(host="127.0.0.1", port=5000, debug=True)
