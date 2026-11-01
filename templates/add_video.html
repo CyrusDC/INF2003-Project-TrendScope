@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html>
+<head><title>Add Video</title></head>
+<body>
+    <h2>Add New Video</h2>
+    
+    <!-- Flash message display -->
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        {% for category, message in messages %}
+          <div style="color: {{ 'red' if category == 'danger' else 'green' }};">{{ message }}</div>
+        {% endfor %}
+      {% endif %}
+    {% endwith %}
+
+    <!-- Standard HTML Form -->
+    <form method="POST" action="/add_video">
+        <label>Video ID (11 chars):</label>
+        <input type="text" name="video_id" maxlength="11" required><br><br>
+        
+        <label>Title:</label>
+        <input type="text" name="title" required><br><br>
+        
+        <label>Tag Count:</label>
+        <input type="number" name="tag_count" min="0" required><br><br>
+        
+        <label>Channel ID:</label>
+        <input type="number" name="channel_id" min="1" required><br><br>
+        
+        <label>Category ID:</label>
+        <input type="number" name="category_id" min="1" required><br><br>
+        
+        <label>Publish Date:</label>
+        <input type="date" name="pub_date" required><br><br>
+        
+        <label>Publish Time:</label>
+        <input type="time" name="pub_time" required><br><br>
+        
+        <button type="submit">Submit Record</button>
+    </form>
+</body>
+</html>

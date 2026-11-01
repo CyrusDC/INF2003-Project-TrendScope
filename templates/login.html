@@ -1,0 +1,23 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-4">
+        <div class="card shadow-sm mt-5">
+            <div class="card-body">
+                <h4 class="card-title text-center mb-4">Database System Access</h4>
+                <form method="POST">
+                    <div class="mb-3">
+                        <label class="form-label">Username</label>
+                        <input type="text" name="username" class="form-control" placeholder="admin or viewer" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Password</label>
+                        <input type="password" name="password" class="form-control" placeholder="admin123 or viewer123" required>
+                    </div>
+                    <button type="submit" class="btn btn-primary w-100">Authenticate</button>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

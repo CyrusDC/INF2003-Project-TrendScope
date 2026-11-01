@@ -1,0 +1,287 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="row">
+    <!-- READ SECTION -->
+    <div class="col-md-6 mb-4">
+        <div class="card shadow-sm h-100">
+            <div class="card-header bg-secondary text-white">Read Record</div>
+            <div class="card-body">
+                <form method="POST">
+                    <input type="hidden" name="action" value="read">
+                    <div class="mb-2">
+                        <label class="form-label">Table</label>
+                        <select name="table" class="form-select">
+                            <option value="Category">Category</option>
+                            <option value="Video">Video</option>
+                            <option value="Country">Country</option>
+                            <option value="Channel">Channel</option>
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Primary Key (ID or Code)</label>
+                        <input type="text" name="identifier" class="form-control" required>
+                    </div>
+                    <button type="submit" class="btn btn-secondary w-100">Query Database</button>
+                </form>
+                {% if search_results %}
+                    <div class="mt-3 table-responsive">{{ search_results | safe }}</div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <!-- DELETE SECTION -->
+    <div class="col-md-6 mb-4">
+        <div class="card shadow-sm border-danger h-100">
+            <div class="card-header bg-danger text-white">Delete Record (Admin Only)</div>
+            <div class="card-body">
+                <form method="POST">
+                    <input type="hidden" name="action" value="delete">
+                    <div class="mb-2">
+                        <label class="form-label">Table</label>
+                        <select name="table" class="form-select">
+                            <option value="Category">Category</option>
+                            <option value="Video">Video</option>
+                            <option value="Country">Country</option>
+                            <option value="Revenue Record">Revenue Record (MongoDB)</option>
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Primary Key to Delete</label>
+                        <input type="text" name="identifier" class="form-control" required>
+                    </div>
+                    <button type="submit" class="btn btn-danger w-100" {% if session.get('role') != 'admin' %}disabled{% endif %}>
+                        Permanently Delete
+                    </button>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- DYNAMIC INSERT SECTION -->
+    <div class="col-12 mt-4">
+        <div class="card shadow-sm border-success">
+            <div class="card-header bg-success text-white">
+                <h5 class="mb-0">Insert Record (Admin Only)</h5>
+            </div>
+            <div class="card-body">
+                <form method="POST">
+                    <input type="hidden" name="action" value="insert">
+                    
+                    <div class="mb-3">
+                        <label class="form-label fw-bold">Select Target Table</label>
+                        <select name="table" id="tableSelector" class="form-select" onchange="toggleFormFields()">
+                            <option value="Category">Category</option>
+                            <option value="Channel">Channel</option>
+                            <option value="Country">Country</option>
+                            <option value="Video" selected>Video</option>
+                            <option value="Channel Stats">Channel Stats</option>
+                            <option value="Trending Record">Trending Record</option>
+                            <option value="Revenue Record">Revenue Record (MongoDB)</option>
+                        </select>
+                    </div>
+
+                    <hr>
+
+                    <!-- 1. CATEGORY FIELDS -->
+                    <div class="insert-group" id="fields-Category" style="display: none;">
+                        <div class="row">
+                            <div class="col-md-4 mb-2">
+                                <label class="form-label">Category ID</label>
+                                <input type="number" name="category_id" class="form-control" min="1" placeholder="e.g. 24">
+                            </div>
+                            <div class="col-md-8 mb-2">
+                                <label class="form-label">Category Name</label>
+                                <input type="text" name="category_name" class="form-control" placeholder="e.g. Entertainment">
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 2. CHANNEL FIELDS -->
+                    <div class="insert-group" id="fields-Channel" style="display: none;">
+                        <div class="row">
+                            <div class="col-md-4 mb-2">
+                                <label class="form-label">Channel ID</label>
+                                <input type="number" name="channel_id" class="form-control" min="1" placeholder="e.g. 501">
+                            </div>
+                            <div class="col-md-8 mb-2">
+                                <label class="form-label">Channel Title / Name</label>
+                                <input type="text" name="channel_title" class="form-control" placeholder="e.g. PewDiePie">
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 3. COUNTRY FIELDS -->
+                    <div class="insert-group" id="fields-Country" style="display: none;">
+                        <div class="row">
+                            <div class="col-md-3 mb-2">
+                                <label class="form-label">Country Code (2-char)</label>
+                                <input type="text" name="country_code" class="form-control" maxlength="2" placeholder="e.g. US">
+                            </div>
+                            <div class="col-md-5 mb-2">
+                                <label class="form-label">Country Name</label>
+                                <input type="text" name="country_name" class="form-control" placeholder="e.g. United States">
+                            </div>
+                            <div class="col-md-4 mb-2">
+                                <label class="form-label">Population</label>
+                                <input type="number" name="population" class="form-control" min="0" placeholder="e.g. 331000000">
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 4. VIDEO FIELDS -->
+                    <div class="insert-group" id="fields-Video">
+                        <div class="row">
+                            <div class="col-md-4 mb-2">
+                                <label class="form-label">Video ID (11 chars)</label>
+                                <input type="text" name="video_id" class="form-control" maxlength="11" placeholder="e.g. dQw4w9WgXcQ">
+                            </div>
+                            <div class="col-md-8 mb-2">
+                                <label class="form-label">Title</label>
+                                <input type="text" name="title" class="form-control" placeholder="Video Title">
+                            </div>
+                            <div class="col-md-3 mb-2">
+                                <label class="form-label">Channel ID</label>
+                                <input type="number" name="channel_id" class="form-control" min="1">
+                            </div>
+                            <div class="col-md-3 mb-2">
+                                <label class="form-label">Category ID</label>
+                                <input type="number" name="category_id" class="form-control" min="1">
+                            </div>
+                            <div class="col-md-2 mb-2">
+                                <label class="form-label">Tag Count</label>
+                                <input type="number" name="tag_count" class="form-control" min="0" value="0">
+                            </div>
+                            <div class="col-md-2 mb-2">
+                                <label class="form-label">Publish Date</label>
+                                <input type="date" name="pub_date" class="form-control">
+                            </div>
+                            <div class="col-md-2 mb-2">
+                                <label class="form-label">Publish Time</label>
+                                <input type="time" name="pub_time" class="form-control" value="00:00">
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 5. CHANNEL STATS FIELDS -->
+                    <div class="insert-group" id="fields-Channel-Stats" style="display: none;">
+                        <div class="row">
+                            <div class="col-md-3 mb-2">
+                                <label class="form-label">Channel ID</label>
+                                <input type="number" name="channel_id" class="form-control" min="1">
+                            </div>
+                            <div class="col-md-3 mb-2">
+                                <label class="form-label">Country Code</label>
+                                <input type="text" name="country_code" class="form-control" maxlength="2" placeholder="e.g. US">
+                            </div>
+                            <div class="col-md-3 mb-2">
+                                <label class="form-label">Rank</label>
+                                <input type="number" name="rank" class="form-control" min="1">
+                            </div>
+                            <div class="col-md-3 mb-2">
+                                <label class="form-label">Subscribers</label>
+                                <input type="number" name="subscribers" class="form-control" min="0">
+                            </div>
+                            <div class="col-md-3 mb-2">
+                                <label class="form-label">Views</label>
+                                <input type="number" name="views" class="form-control" min="0">
+                            </div>
+                            <div class="col-md-3 mb-2">
+                                <label class="form-label">Total Uploads</label>
+                                <input type="number" name="total_uploads" class="form-control" min="0">
+                            </div>
+                            <div class="col-md-2 mb-2">
+                                <label class="form-label">Snapshot Date</label>
+                                <input type="date" name="stats_date" class="form-control">
+                            </div>
+                            <div class="col-md-2 mb-2">
+                                <label class="form-label">Views (Last 30d)</label>
+                                <input type="number" name="views_30" class="form-control" min="0" value="0">
+                            </div>
+                            <div class="col-md-2 mb-2">
+                                <label class="form-label">Subs (Last 30d)</label>
+                                <input type="number" name="subs_30" class="form-control" min="0" value="0">
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 6. TRENDING RECORD FIELDS -->
+                    <div class="insert-group" id="fields-Trending-Record" style="display: none;">
+                        <div class="row">
+                            <div class="col-md-3 mb-2">
+                                <label class="form-label">Record ID</label>
+                                <input type="number" name="record_id" class="form-control" min="1">
+                            </div>
+                            <div class="col-md-3 mb-2">
+                                <label class="form-label">Video ID (11 chars)</label>
+                                <input type="text" name="video_id" class="form-control" maxlength="11">
+                            </div>
+                            <div class="col-md-3 mb-2">
+                                <label class="form-label">Country Code</label>
+                                <input type="text" name="country_code" class="form-control" maxlength="2">
+                            </div>
+                            <div class="col-md-3 mb-2">
+                                <label class="form-label">Trending Date</label>
+                                <input type="date" name="trending_date" class="form-control">
+                            </div>
+                            <div class="col-md-3 mb-2">
+                                <label class="form-label">View Count</label>
+                                <input type="number" name="views" class="form-control" min="0">
+                            </div>
+                            <div class="col-md-3 mb-2">
+                                <label class="form-label">Likes</label>
+                                <input type="number" name="likes" class="form-control" min="0">
+                            </div>
+                            <div class="col-md-3 mb-2">
+                                <label class="form-label">Dislikes</label>
+                                <input type="number" name="dislikes" class="form-control" min="0">
+                            </div>
+                            <div class="col-md-3 mb-2">
+                                <label class="form-label">Comments</label>
+                                <input type="number" name="comment_count" class="form-control" min="0">
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 7. REVENUE RECORD (MONGODB) -->
+                    <div class="insert-group" id="fields-Revenue-Record" style="display: none;">
+                        <div class="row">
+                            <div class="col-md-4 mb-2">
+                                <label class="form-label">Video ID (11 chars)</label>
+                                <input type="text" name="video_id" class="form-control" maxlength="11">
+                            </div>
+                            <div class="col-md-4 mb-2">
+                                <label class="form-label">Estimated Revenue ($)</label>
+                                <input type="number" step="0.01" name="estimated_revenue" class="form-control" min="0">
+                            </div>
+                            <div class="col-md-4 mb-2">
+                                <label class="form-label">Monetized Playbacks</label>
+                                <input type="number" name="monetized_playbacks" class="form-control" min="0">
+                            </div>
+                        </div>
+                    </div>
+
+                    <button type="submit" class="btn btn-success mt-3" {% if session.get('role') != 'admin' %}disabled{% endif %}>
+                        Submit Insert Record
+                    </button>
+                </form>
+            </div>
+        </div>
+    </div>
+    <script>
+    function toggleFormFields() {
+        const selected = document.getElementById("tableSelector").value;
+        const groups = document.querySelectorAll(".insert-group");
+        
+        groups.forEach(group => {
+            const isMatch = group.id === "fields-" + selected.replace(/\s+/g, '-');
+            group.style.display = isMatch ? "block" : "none";
+            // Disable inactive inputs so their empty values aren't submitted
+            const inputs = group.querySelectorAll("input, select");
+            inputs.forEach(input => input.disabled = !isMatch);
+        });
+    }
+    document.addEventListener("DOMContentLoaded", toggleFormFields);
+    </script>
+</div>
+{% endblock %}
