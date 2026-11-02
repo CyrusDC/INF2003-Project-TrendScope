@@ -132,5 +132,49 @@ def search_videos():
         error=error
     )
 
+# ------------------------------------------------------------------
+# MONGODB REVENUE ANALYTICS (VIEWER & ADMIN)
+# ------------------------------------------------------------------
+
+@app.route('/video-revenue', methods=['GET'])
+def video_revenue():
+    action = request.args.get('action')
+    selected_tier = request.args.get('selected_tier', 'large')
+    results = []
+    error = None
+
+    try:
+        if action == 'tier':
+            df = DataManager.filter_by_creator_tier(tier=selected_tier)
+            results = df.to_dict(orient="records")
+        elif action == 'country':
+            df = DataManager.aggregate_revenue_by_country()
+            results = df.to_dict(orient="records")
+        elif action == 'categories':
+            df = DataManager.aggregate_category_breakdown()
+            results = df.to_dict(orient="records")
+        elif action == 'compare':
+            # Replaced raw JSON with Tier Comparison
+            df = DataManager.compare_creator_tiers()
+            results = df.to_dict(orient="records")
+    except Exception as e:
+        error = f"Database error: {str(e)}"
+
+    return render_template(
+        'video_revenue.html',
+        action_type=action,
+        selected_tier=selected_tier,
+        results=results,
+        error=error
+    )
+
+@app.route('/api/video-stats/<video_id>', methods=['GET'])
+def get_video_stats(video_id):
+    stats = DataManager.get_video_stats_by_id(video_id)
+    if not stats:
+        return {"error": "Video not found"}, 404
+    return stats
+
+
 if __name__ == "__main__":
     app.run(host="127.0.0.1", port=5000, debug=True)
