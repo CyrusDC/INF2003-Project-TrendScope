@@ -145,18 +145,46 @@ def video_revenue():
 
     try:
         if action == 'tier':
+            # 1. Fetch raw tier data from MongoDB
             df = DataManager.filter_by_creator_tier(tier=selected_tier)
             results = df.to_dict(orient="records")
+
+            # 2. Cross-reference PostgreSQL for Titles and Names
+            if results:
+                video_map, channel_map, category_map = DataManager.get_metadata_lookup_maps()
+                for item in results:
+                    v_id = item.get("video_id")
+                    c_id = item.get("channel_id")
+                    cat_id = item.get("category_id")
+
+                    # Attach readable names from PostgreSQL (fallback to ID if not found)
+                    item["video_title"] = video_map.get(v_id, f"Video {v_id}")
+                    item["channel_name"] = channel_map.get(c_id, f"Channel {c_id}")
+                    item["category_name"] = category_map.get(cat_id, f"Category {cat_id}")
+
         elif action == 'country':
             df = DataManager.aggregate_revenue_by_country()
             results = df.to_dict(orient="records")
+
         elif action == 'categories':
             df = DataManager.aggregate_category_breakdown()
             results = df.to_dict(orient="records")
+            
+            # Enrich with PostgreSQL Category Names while preserving counts
+            if results:
+                try:
+                    _, _, category_map = DataManager.get_metadata_lookup_maps()
+                    for item in results:
+                        cat_id = item.get("category_id") or item.get("_id")
+                        # Match integer key with postgres map
+                        item["category_name"] = category_map.get(int(cat_id) if cat_id is not None else None, f"Category {cat_id}")
+                except Exception as ex:
+                    print(f"Error enriching categories: {ex}")
+
         elif action == 'compare':
-            # Replaced raw JSON with Tier Comparison
             df = DataManager.compare_creator_tiers()
             results = df.to_dict(orient="records")
+
     except Exception as e:
         error = f"Database error: {str(e)}"
 
@@ -173,8 +201,17 @@ def get_video_stats(video_id):
     stats = DataManager.get_video_stats_by_id(video_id)
     if not stats:
         return {"error": "Video not found"}, 404
-    return stats
 
+    # Cross-reference Postgres for titles
+    try:
+        video_map, channel_map, category_map = DataManager.get_metadata_lookup_maps()
+        stats["video_title"] = video_map.get(stats.get("video_id"), "Unknown Title")
+        stats["channel_name"] = channel_map.get(stats.get("channel_id"), "Unknown Channel")
+        stats["category_name"] = category_map.get(stats.get("category_id"), "Unknown Category")
+    except Exception:
+        pass
+
+    return stats
 
 if __name__ == "__main__":
     app.run(host="127.0.0.1", port=5000, debug=True)

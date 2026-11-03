@@ -73,8 +73,8 @@
                         <thead class="table-dark">
                             <tr>
                                 <th>#</th>
-                                <th>Video ID</th>
-                                <th>Channel ID</th>
+                                <th>Video Title (ID)</th>
+                                <th>Channel Name</th>
                                 <th>Creator Tier</th>
                                 <th>Total Revenue (USD)</th>
                                 <th>Revenue by Country</th>
@@ -85,13 +85,18 @@
                             <tr class="tier-row">
                                 <td class="text-muted">{{ loop.index }}</td>
                                 <td>
+                                    <!-- Clickable Title with ID subtitle -->
                                     <a href="javascript:void(0)" 
-                                       class="fw-bold text-decoration-none text-primary" 
-                                       onclick="loadVideoStats('{{ item.video_id }}')">
-                                        <code>{{ item.video_id }}</code> 🔍
+                                    class="fw-bold text-decoration-none text-primary" 
+                                    onclick="loadVideoStats('{{ item.video_id }}')">
+                                        {{ item.video_title }}
                                     </a>
+                                    <div class="small text-muted">ID: <code>{{ item.video_id }}</code></div>
                                 </td>
-                                <td>{{ item.channel_id }}</td>
+                                <td>
+                                    <span class="fw-semibold">{{ item.channel_name }}</span>
+                                    <div class="small text-muted">ID: {{ item.channel_id }}</div>
+                                </td>
                                 <td><span class="badge bg-info text-dark">{{ item.creator_tier }}</span></td>
                                 <td class="fw-bold text-success">
                                     ${{ "{:,.2f}".format(item.total_video_revenue|float) if item.total_video_revenue is not none else "0.00" }}
@@ -151,30 +156,35 @@
             {% endif %}
 
         <!-- Case 3: Category Breakdown Results -->
-        {% elif action_type == 'categories' %}
-            <h5 class="mb-3">Document Breakdown by Category</h5>
-            {% if results %}
-                <div class="table-responsive">
-                    <table class="table table-striped table-hover">
-                        <thead class="table-dark">
-                            <tr>
-                                <th>Category ID</th>
-                                <th>Total Videos</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {% for item in results %}
-                            <tr>
-                                <td>Category {{ item.category_id or item._id }}</td>
-                                <td>{{ "{:,}".format(item.total_videos|int) }}</td>
-                            </tr>
-                            {% endfor %}
-                        </tbody>
-                    </table>
-                </div>
-            {% else %}
-                <div class="alert alert-warning">No category records found.</div>
-            {% endif %}
+                {% elif action_type == 'categories' %}
+                    <h5 class="mb-3">Document Breakdown by Category</h5>
+                    {% if results %}
+                        <div class="table-responsive">
+                            <table class="table table-striped table-hover align-middle">
+                                <thead class="table-dark">
+                                    <tr>
+                                        <th>Category Name (ID)</th>
+                                        <th class="text-end pe-4">Total Videos</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for item in results %}
+                                    <tr>
+                                        <td>
+                                            <strong>{{ item.category_name or ('Category ' ~ (item.category_id or item._id)) }}</strong> 
+                                            <span class="text-muted small">(ID: {{ item.category_id or item._id }})</span>
+                                        </td>
+                                        <td class="text-end pe-4 fw-bold text-primary">
+                                            {{ "{:,}".format((item.total_videos if item.total_videos is defined and item.total_videos is not none else item.count)|int) }}
+                                        </td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    {% else %}
+                        <div class="alert alert-warning">No category records found.</div>
+                    {% endif %}
 
         <!-- Case 4: Tier Comparison Analysis -->
         {% elif action_type == 'compare' %}

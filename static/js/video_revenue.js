@@ -111,6 +111,9 @@ function loadVideoStats(videoId) {
             // General Info
             document.getElementById('modalChannelId').textContent = data.channel_id ?? 'N/A';
             document.getElementById('modalCreatorTier').textContent = (data.creator_tier || 'N/A').toUpperCase();
+            // Display Video Title and Channel Name from Postgres
+            document.getElementById('modalVideoId').textContent = data.video_title ? `${data.video_title} (${videoId})` : videoId;
+            document.getElementById('modalChannelId').textContent = data.channel_name ? `${data.channel_name} (ID: ${data.channel_id})` : data.channel_id;
 
             // Monetization Status & Warning Banner Control
             const mon = data.monetization || {};

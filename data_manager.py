@@ -244,8 +244,12 @@ class DataManager:
         ]
         results = list(col.aggregate(pipeline))
         df = pd.DataFrame(results)
-        if not df.empty and "_id" in df.columns:
-            df = df.rename(columns={"_id": "category_id"})
+        if not df.empty:
+            if "_id" in df.columns:
+                df = df.rename(columns={"_id": "category_id"})
+            # Ensure total_videos column is explicitly integer
+            if "total_videos" in df.columns:
+                df["total_videos"] = df["total_videos"].fillna(0).astype(int)
         return df
     
     @classmethod
@@ -341,3 +345,30 @@ class DataManager:
         if not df.empty and "_id" in df.columns:
             df = df.rename(columns={"_id": "creator_tier"})
         return df
+
+
+    @classmethod
+    def get_metadata_lookup_maps(cls):
+        """
+        Fetches title/name mappings from PostgreSQL:
+        - video_id -> video title
+        - channel_id -> channel_title
+        - category_id -> category_name
+        """
+        conn = cls.get_pg_connection()
+        try:
+            # 1. Video ID -> Title
+            videos_df = pd.read_sql("SELECT video_id, title FROM Video;", conn)
+            video_map = dict(zip(videos_df["video_id"], videos_df["title"]))
+
+            # 2. Channel ID -> Channel Title
+            channels_df = pd.read_sql("SELECT channel_id, channel_title FROM Channel;", conn)
+            channel_map = dict(zip(channels_df["channel_id"], channels_df["channel_title"]))
+
+            # 3. Category ID -> Category Name
+            categories_df = pd.read_sql("SELECT category_id, category_name FROM Category;", conn)
+            category_map = dict(zip(categories_df["category_id"], categories_df["category_name"]))
+
+            return video_map, channel_map, category_map
+        finally:
+            conn.close()
