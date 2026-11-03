@@ -63,6 +63,24 @@ class DataManager:
             return pd.read_sql(valid_views[view_name], conn)
         finally:
             conn.close()
+    # ------------------------------------------------------------------
+    # VIDEO KEYWORD SEARCH (POSTGRESQL)
+    # ------------------------------------------------------------------
+    @classmethod
+    def search_videos_with_keyword(cls, keyword):
+
+        sql = """
+            SELECT *
+            FROM search_videos_with_keyword(%s::text);
+        """
+
+        conn = cls.get_pg_connection()
+
+        try:
+            return pd.read_sql(sql,conn,params=(keyword,))
+
+        finally:
+            conn.close()
 
     # ------------------------------------------------------------------
     # RELATIONAL CRUD OPERATIONS (POSTGRESQL)
@@ -191,3 +209,166 @@ class DataManager:
         col = cls.get_mongo_collection("revenue")
         res = col.delete_one({"video_id": video_id})
         return res.deleted_count > 0
+
+    # ------------------------------------------------------------------
+    # NON-RELATIONAL ANALYTICS (MONGODB)
+    # ------------------------------------------------------------------
+    @classmethod
+    def aggregate_revenue_by_country(cls):
+        """Unwinds nested country revenue and sums total estimated gross revenue."""
+        col = cls.get_mongo_collection("revenue")
+        pipeline = [
+            {"$unwind": "$revenue_by_country"},
+            {"$group": {
+                "_id": "$revenue_by_country.country_code",
+                "total_estimated_revenue": {"$sum": "$revenue_by_country.estimated_gross_usd"}
+            }},
+            {"$sort": {"total_estimated_revenue": -1}}
+        ]
+        results = list(col.aggregate(pipeline))
+        df = pd.DataFrame(results)
+        if not df.empty and "_id" in df.columns:
+            df = df.rename(columns={"_id": "country_code"})
+        return df
+
+    @classmethod
+    def aggregate_category_breakdown(cls):
+        """Counts the total videos per category_id in MongoDB."""
+        col = cls.get_mongo_collection("revenue")
+        pipeline = [
+            {"$group": {
+                "_id": "$category_id",
+                "total_videos": {"$sum": 1}
+            }},
+            {"$sort": {"total_videos": -1}}
+        ]
+        results = list(col.aggregate(pipeline))
+        df = pd.DataFrame(results)
+        if not df.empty:
+            if "_id" in df.columns:
+                df = df.rename(columns={"_id": "category_id"})
+            # Ensure total_videos column is explicitly integer
+            if "total_videos" in df.columns:
+                df["total_videos"] = df["total_videos"].fillna(0).astype(int)
+        return df
+    
+    @classmethod
+    def filter_by_creator_tier(cls, tier="large", limit=None):
+        col = cls.get_mongo_collection("revenue")
+        pipeline = [
+            {"$match": {"creator_tier": {"$regex": f"^{tier.strip()}$", "$options": "i"}}}
+        ]
+        if limit:
+            pipeline.append({"$limit": limit})
+
+        pipeline.extend([
+            {"$project": {
+                "_id": 0,
+                "video_id": 1,
+                "channel_id": 1,
+                "creator_tier": 1,
+                "category_id": 1,
+                "monetization": 1,
+                "sponsorships": 1,
+                "revenue_by_country": 1,
+                # Platform ad revenue
+                "ad_revenue": {
+                    "$reduce": {
+                        "input": {"$ifNull": ["$revenue_by_country", []]},
+                        "initialValue": 0.0,
+                        "in": {"$add": ["$$value", {"$ifNull": ["$$this.estimated_gross_usd", 0.0]}]}
+                    }
+                },
+                # Direct sponsorship revenue
+                "sponsorship_revenue": {"$ifNull": ["$revenue_summary.total_sponsorship_usd", 0.0]},
+                # Total combined revenue
+                "total_video_revenue": {
+                    "$add": [
+                        {
+                            "$reduce": {
+                                "input": {"$ifNull": ["$revenue_by_country", []]},
+                                "initialValue": 0.0,
+                                "in": {"$add": ["$$value", {"$ifNull": ["$$this.estimated_gross_usd", 0.0]}]}
+                            }
+                        },
+                        {"$ifNull": ["$revenue_summary.total_sponsorship_usd", 0.0]}
+                    ]
+                }
+            }},
+            {"$sort": {"total_video_revenue": -1}}
+        ])
+        results = list(col.aggregate(pipeline))
+        return pd.DataFrame(results)
+
+    @classmethod
+    def get_video_stats_by_id(cls, video_id):
+        """Fetches full monetization, ad format, and revenue stats for a single video."""
+        col = cls.get_mongo_collection("revenue")
+        doc = col.find_one({"video_id": str(video_id).strip()}, {"_id": 0})
+        return doc if doc else {}
+
+    @classmethod
+    def compare_creator_tiers(cls):
+        """
+        Aggregates financial and monetization metrics across tiers:
+        calculates total revenue, average revenue per video, average playback rate,
+        and total videos to verify if higher tiers generate more revenue.
+        """
+        col = cls.get_mongo_collection("revenue")
+        pipeline = [
+            # 1. Compute total revenue and playback rate for each individual video document
+            {"$project": {
+                "creator_tier": {"$toLower": "$creator_tier"},
+                "playback_rate": "$ads.monetized_playback_rate",
+                "video_revenue": {
+                    "$reduce": {
+                        "input": {"$ifNull": ["$revenue_by_country", []]},
+                        "initialValue": 0.0,
+                        "in": {"$add": ["$$value", {"$ifNull": ["$$this.estimated_gross_usd", 0.0]}]}
+                    }
+                }
+            }},
+            # 2. Group by creator tier and calculate financial comparisons
+            {"$group": {
+                "_id": "$creator_tier",
+                "total_videos": {"$sum": 1},
+                "total_tier_revenue": {"$sum": "$video_revenue"},
+                "avg_revenue_per_video": {"$avg": "$video_revenue"},
+                "max_single_video_revenue": {"$max": "$video_revenue"},
+                "avg_playback_rate": {"$avg": "$playback_rate"}
+            }},
+            # 3. Sort from highest grossing to lowest
+            {"$sort": {"total_tier_revenue": -1}}
+        ]
+        results = list(col.aggregate(pipeline))
+        df = pd.DataFrame(results)
+        if not df.empty and "_id" in df.columns:
+            df = df.rename(columns={"_id": "creator_tier"})
+        return df
+
+
+    @classmethod
+    def get_metadata_lookup_maps(cls):
+        """
+        Fetches title/name mappings from PostgreSQL:
+        - video_id -> video title
+        - channel_id -> channel_title
+        - category_id -> category_name
+        """
+        conn = cls.get_pg_connection()
+        try:
+            # 1. Video ID -> Title
+            videos_df = pd.read_sql("SELECT video_id, title FROM Video;", conn)
+            video_map = dict(zip(videos_df["video_id"], videos_df["title"]))
+
+            # 2. Channel ID -> Channel Title
+            channels_df = pd.read_sql("SELECT channel_id, channel_title FROM Channel;", conn)
+            channel_map = dict(zip(channels_df["channel_id"], channels_df["channel_title"]))
+
+            # 3. Category ID -> Category Name
+            categories_df = pd.read_sql("SELECT category_id, category_name FROM Category;", conn)
+            category_map = dict(zip(categories_df["category_id"], categories_df["category_name"]))
+
+            return video_map, channel_map, category_map
+        finally:
+            conn.close()

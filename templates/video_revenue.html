@@ -1,0 +1,392 @@
+{% extends 'base.html' %}
+
+{% block content %}
+
+<!-- Page Header -->
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h3>MongoDB Revenue & Tier Analytics</h3>
+    <a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary">
+        Back to Dashboard
+    </a>
+</div>
+
+<!-- Controls Card -->
+<div class="card shadow-sm p-4 mb-4">
+    <h5 class="mb-3">Filter & Run Aggregations</h5>
+    
+    <div class="row g-3">
+        <!-- 1. Filter by Creator Tier -->
+        <div class="col-md-5">
+            <form action="{{ url_for('video_revenue') }}" method="GET">
+                <input type="hidden" name="action" value="tier">
+                <label class="form-label fw-bold">Creator Tier Search</label>
+                <div class="input-group">
+                    <select name="selected_tier" class="form-select">
+                        <option value="mega" {% if selected_tier|lower == 'mega' %}selected{% endif %}>Mega</option>
+                        <option value="large" {% if selected_tier|lower == 'large' %}selected{% endif %}>Large</option>
+                        <option value="medium" {% if selected_tier|lower == 'medium' %}selected{% endif %}>Medium</option>
+                        <option value="small" {% if selected_tier|lower == 'small' %}selected{% endif %}>Small</option>
+                    </select>
+                    <button type="submit" class="btn btn-primary">Filter Tier</button>
+                </div>
+            </form>
+        </div>
+
+        <!-- 2. Aggregation Pipeline Buttons -->
+        <div class="col-md-7 d-flex align-items-end gap-2">
+            <a href="{{ url_for('video_revenue', action='country') }}" class="btn btn-success flex-fill">
+                Revenue by Country
+            </a>
+            <a href="{{ url_for('video_revenue', action='categories') }}" class="btn btn-info text-white flex-fill">
+                Category Breakdown
+            </a>
+            <a href="{{ url_for('video_revenue', action='compare') }}" class="btn btn-warning text-dark fw-bold flex-fill">
+                Tier Revenue Comparison
+            </a>
+        </div>
+    </div>
+</div>
+
+<!-- Results Area -->
+{% if error %}
+    <div class="alert alert-danger">
+        {{ error }}
+    </div>
+
+{% elif action_type %}
+    <div class="card shadow-sm p-4 mb-4">
+
+        <!-- Case 1: Creator Tier Filter Results -->
+        {% if action_type == 'tier' %}
+            <div class="d-flex justify-content-between align-items-center mb-3">
+                <h5 class="mb-0">
+                    Videos in Tier: <span class="badge bg-primary">{{ selected_tier|capitalize }}</span>
+                </h5>
+                <span class="text-muted" id="page-indicator">
+                    Showing 1–20 of {{ results|length }} records
+                </span>
+            </div>
+
+            {% if results %}
+                <div class="table-responsive">
+                    <table class="table table-striped table-hover align-middle" id="tier-table">
+                        <thead class="table-dark">
+                            <tr>
+                                <th>#</th>
+                                <th>Video Title (ID)</th>
+                                <th>Channel Name</th>
+                                <th>Creator Tier</th>
+                                <th>Total Revenue (USD)</th>
+                                <th>Revenue by Country</th>
+                            </tr>
+                        </thead>
+                        <tbody id="tier-table-body">
+                            {% for item in results %}
+                            <tr class="tier-row">
+                                <td class="text-muted">{{ loop.index }}</td>
+                                <td>
+                                    <!-- Clickable Title with ID subtitle -->
+                                    <a href="javascript:void(0)" 
+                                    class="fw-bold text-decoration-none text-primary" 
+                                    onclick="loadVideoStats('{{ item.video_id }}')">
+                                        {{ item.video_title }}
+                                    </a>
+                                    <div class="small text-muted">ID: <code>{{ item.video_id }}</code></div>
+                                </td>
+                                <td>
+                                    <span class="fw-semibold">{{ item.channel_name }}</span>
+                                    <div class="small text-muted">ID: {{ item.channel_id }}</div>
+                                </td>
+                                <td><span class="badge bg-info text-dark">{{ item.creator_tier }}</span></td>
+                                <td class="fw-bold text-success">
+                                    ${{ "{:,.2f}".format(item.total_video_revenue|float) if item.total_video_revenue is not none else "0.00" }}
+                                </td>
+                                <td>
+                                    {% if item.revenue_by_country %}
+                                        <div class="d-flex flex-wrap gap-1">
+                                            {% for c in item.revenue_by_country %}
+                                                <span class="badge bg-light text-dark border">
+                                                    {{ c.country_code }}: ${{ "{:,.2f}".format(c.estimated_gross_usd|float) }}
+                                                </span>
+                                            {% endfor %}
+                                        </div>
+                                    {% else %}
+                                        <span class="text-muted">None</span>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- Numbered Pagination Controls -->
+                <nav aria-label="Tier results pagination" class="mt-4">
+                    <ul class="pagination justify-content-center" id="pagination-nav"></ul>
+                </nav>
+
+            {% else %}
+                <div class="alert alert-warning">No records found for tier "{{ selected_tier }}".</div>
+            {% endif %}
+
+        <!-- Case 2: Country Revenue Aggregation Results -->
+        {% elif action_type == 'country' %}
+            <h5 class="mb-3">Aggregated Ad Revenue by Country</h5>
+            {% if results %}
+                <div class="table-responsive">
+                    <table class="table table-striped table-hover">
+                        <thead class="table-dark">
+                            <tr>
+                                <th>Country Code</th>
+                                <th>Total Estimated Gross (USD)</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for item in results %}
+                            <tr>
+                                <td><strong>{{ item.country_code or item._id }}</strong></td>
+                                <td>${{ "{:,.2f}".format(item.total_estimated_revenue|float) if item.total_estimated_revenue is not none else "0.00" }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            {% else %}
+                <div class="alert alert-warning">No country aggregation records found.</div>
+            {% endif %}
+
+        <!-- Case 3: Category Breakdown Results -->
+                {% elif action_type == 'categories' %}
+                    <h5 class="mb-3">Document Breakdown by Category</h5>
+                    {% if results %}
+                        <div class="table-responsive">
+                            <table class="table table-striped table-hover align-middle">
+                                <thead class="table-dark">
+                                    <tr>
+                                        <th>Category Name (ID)</th>
+                                        <th class="text-end pe-4">Total Videos</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for item in results %}
+                                    <tr>
+                                        <td>
+                                            <strong>{{ item.category_name or ('Category ' ~ (item.category_id or item._id)) }}</strong> 
+                                            <span class="text-muted small">(ID: {{ item.category_id or item._id }})</span>
+                                        </td>
+                                        <td class="text-end pe-4 fw-bold text-primary">
+                                            {{ "{:,}".format((item.total_videos if item.total_videos is defined and item.total_videos is not none else item.count)|int) }}
+                                        </td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    {% else %}
+                        <div class="alert alert-warning">No category records found.</div>
+                    {% endif %}
+
+        <!-- Case 4: Tier Comparison Analysis -->
+        {% elif action_type == 'compare' %}
+            <div class="d-flex justify-content-between align-items-center mb-3">
+                <h5 class="mb-0">Tier Monetization Comparison: Do Higher Tiers Earn More?</h5>
+                <span class="badge bg-warning text-dark px-3 py-2">Comparative Aggregate</span>
+            </div>
+
+            <p class="text-muted">
+                Aggregation comparing overall revenue, average payout per video, and monetized playback rates across <strong>Mega</strong>, <strong>Large</strong>, <strong>Medium</strong>, and <strong>Small</strong> channels.
+            </p>
+
+            {% if results %}
+                <div class="table-responsive">
+                    <table class="table table-bordered table-hover align-middle">
+                        <thead class="table-dark text-center">
+                            <tr>
+                                <th>Creator Tier</th>
+                                <th>Total Videos</th>
+                                <th>Total Tier Revenue (USD)</th>
+                                <th>Avg Revenue / Video</th>
+                                <th>Peak Video Revenue</th>
+                                <th>Avg Playback Rate</th>
+                            </tr>
+                        </thead>
+                        <tbody class="text-center">
+                            {% for row in results %}
+                            <tr>
+                                <td>
+                                    <span class="badge 
+                                        {% if (row.creator_tier or row._id)|lower == 'mega' %}bg-danger
+                                        {% elif (row.creator_tier or row._id)|lower == 'large' %}bg-primary
+                                        {% elif (row.creator_tier or row._id)|lower == 'medium' %}bg-info text-dark
+                                        {% else %}bg-secondary{% endif %} px-3 py-2 fs-6">
+                                        {{ (row.creator_tier or row._id)|capitalize }}
+                                    </span>
+                                </td>
+                                <td class="fw-bold">{{ "{:,}".format(row.total_videos|int) }}</td>
+                                <td class="text-success fw-bold fs-6">
+                                    ${{ "{:,.2f}".format(row.total_tier_revenue|float) if row.total_tier_revenue is not none else "0.00" }}
+                                </td>
+                                <td class="fw-bold text-primary">
+                                    ${{ "{:,.2f}".format(row.avg_revenue_per_video|float) if row.avg_revenue_per_video is not none else "0.00" }}
+                                </td>
+                                <td>
+                                    ${{ "{:,.2f}".format(row.max_single_video_revenue|float) if row.max_single_video_revenue is not none else "0.00" }}
+                                </td>
+                                <td>
+                                    {{ "{:.1f}%".format((row.avg_playback_rate|float) * 100) if row.avg_playback_rate is not none else "N/A" }}
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="card bg-light border-0 mt-3 p-3">
+                    <h6 class="fw-bold text-dark mb-1">Key Observation:</h6>
+                    <p class="text-muted mb-0">
+                        Check the <strong>Avg Revenue / Video</strong> column: if <code>Mega</code> and <code>Large</code> channels show significantly higher earnings per video than <code>Small</code> or <code>Medium</code>, it validates that higher creator tiers generate systematically larger returns.
+                    </p>
+                </div>
+            {% else %}
+                <div class="alert alert-warning">No comparative tier data found in collection.</div>
+            {% endif %}
+        {% endif %}
+
+    </div>
+{% endif %}
+
+<!-- Video Stats Modal -->
+<div class="modal fade" id="videoStatsModal" tabindex="-1" aria-labelledby="videoStatsModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-lg modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header bg-dark text-white">
+        <h5 class="modal-title" id="videoStatsModalLabel">
+          Video Monetization & Ad Details: <span id="modalVideoId" class="badge bg-primary"></span>
+        </h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body" id="modalBody">
+        <div id="modalLoading" class="text-center py-4">
+          <div class="spinner-border text-primary" role="status">
+            <span class="visually-hidden">Loading...</span>
+          </div>
+          <p class="mt-2 text-muted">Retrieving document from MongoDB Atlas...</p>
+        </div>
+
+        <div id="modalContent" style="display: none;">
+          <!-- De-monetization Alert Banner (Hidden by default) -->
+          <div id="modalMonetizationAlert" class="alert alert-danger d-flex align-items-center mb-3" role="alert" style="display: none;">
+            <span class="fs-4 me-2">⚠️</span>
+            <div>
+              <strong>Video Not Monetized:</strong> Ad-serving disabled due to 
+              <span id="modalMonetizationReason" class="badge bg-danger text-wrap fs-6 ms-1"></span>
+            </div>
+          </div>
+
+          <!-- 1. Metadata -->
+          <div class="row g-3 mb-3">
+            <div class="col-md-4">
+              <div class="p-3 border rounded bg-light">
+                <small class="text-muted d-block">Channel ID</small>
+                <strong id="modalChannelId">-</strong>
+              </div>
+            </div>
+            <div class="col-md-4">
+              <div class="p-3 border rounded bg-light">
+                <small class="text-muted d-block">Creator Tier</small>
+                <span id="modalCreatorTier" class="badge bg-info text-dark">-</span>
+              </div>
+            </div>
+            <div class="col-md-4">
+              <div class="p-3 border rounded bg-light">
+                <small class="text-muted d-block">Monetization Status</small>
+                <span id="modalMonetizationStatus" class="badge">-</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- 2. Revenue Summary Card -->
+          <div class="card mb-3 border-success">
+            <div class="card-header bg-success text-white fw-bold d-flex justify-content-between align-items-center">
+              <span>Earnings & Payout Overview</span>
+              <span class="badge bg-light text-dark">Combined: <strong id="modalCombinedGrossBadge">$0.00</strong></span>
+            </div>
+            <div class="card-body">
+              <div class="row text-center g-2">
+                <div class="col-6 col-md-3">
+                  <small class="text-muted">Ad Gross (Platform)</small>
+                  <h5 id="modalAdGross" class="text-secondary mt-1">$0.00</h5>
+                </div>
+                <div class="col-6 col-md-3">
+                  <small class="text-muted">Sponsorship Fee (Brand)</small>
+                  <h5 id="modalSponsorshipUsd" class="text-info mt-1">$0.00</h5>
+                </div>
+                <div class="col-6 col-md-3">
+                  <small class="text-muted">Creator Ad Payout</small>
+                  <h5 id="modalCreatorPayout" class="text-primary mt-1">$0.00</h5>
+                </div>
+                <div class="col-6 col-md-3">
+                  <small class="text-muted">Total Video Earnings</small>
+                  <h5 id="modalTotalVideoEarnings" class="text-success mt-1">$0.00</h5>
+                </div>
+              </div>
+              <small class="text-muted fst-italic d-block mt-2 text-center border-top pt-2">
+                Note: In YouTube monetization datasets, brand sponsorships are direct deals handled separately from platform ad revenue.
+              </small>
+            </div>
+          </div>
+
+          <!-- 3. Ad Formats & Playback -->
+          <div class="card mb-3 border-info">
+            <div class="card-header bg-info text-dark fw-bold d-flex justify-content-between align-items-center">
+              <span>Ad Formats & Playback</span>
+              <span class="badge bg-light text-dark">
+                Playback Rate: <strong id="modalPlaybackRate">0.0%</strong>
+              </span>
+            </div>
+            <div class="card-body">
+              <small class="text-muted d-block mb-2">Enabled Ad Types:</small>
+              <div id="modalAdFormats" class="d-flex flex-wrap gap-2"></div>
+            </div>
+          </div>
+
+          <!-- 4. Sponsorships -->
+          <div class="card mb-3">
+            <div class="card-header fw-bold">Brand Sponsorship Details</div>
+            <div class="card-body p-0">
+              <ul class="list-group list-group-flush" id="modalSponsorshipList"></ul>
+            </div>
+          </div>
+
+          <!-- 5. Country Breakdown -->
+          <div class="card">
+            <div class="card-header fw-bold">Country Ad Breakdown</div>
+            <div class="table-responsive">
+              <table class="table table-sm table-striped mb-0">
+                <thead class="table-secondary">
+                  <tr>
+                    <th>Country</th>
+                    <th>Max Views</th>
+                    <th>Est. Gross</th>
+                    <th>Creator Share</th>
+                    <th>Recipient</th>
+                  </tr>
+                </thead>
+                <tbody id="modalCountryTableBody"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Load External JavaScript for Pagination and Modal -->
+<script src="{{ url_for('static', filename='js/video_revenue.js') }}"></script>
+
+{% endblock %}
