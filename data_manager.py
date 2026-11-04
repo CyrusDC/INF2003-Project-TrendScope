@@ -9,9 +9,6 @@ load_dotenv()
 class DataManager:
     """Handles raw database connections, queries, transactions, and rollbacks."""
 
-    # ------------------------------------------------------------------
-    # CONNECTION FACTORIES
-    # ------------------------------------------------------------------
     @staticmethod
     def get_pg_connection():
         return psycopg2.connect(
@@ -45,7 +42,7 @@ class DataManager:
             conn.close()
 
     # ------------------------------------------------------------------
-    # ANALYTICAL VIEWS (POSTGRESQL)
+    # ANALYTICAL VIEWS & SEARCH
     # ------------------------------------------------------------------
     @classmethod
     def fetch_analytical_view(cls, view_name):
@@ -57,67 +54,333 @@ class DataManager:
         }
         if view_name not in valid_views:
             raise ValueError("Invalid view identifier.")
+
+        rename_mappings = {
+            "category_views": {
+                "category_name": "Category Name",
+                "video_count": "Video Count",
+                "total_views": "Total Views",
+                "avg_views_per_video": "Avg Views / Video",
+                "share_of_all_views_pct": "Share of Views (%)"
+            },
+            "channel_performance": {
+                "channel_id": "Channel ID",
+                "channel_name": "Channel Name",
+                "video_count": "Video Count",
+                "total_views": "Total Views",
+                "avg_views_per_video": "Avg Views / Video",
+                "top_video_views": "Top Video Views"
+            },
+            "video_reach": {
+                "video_id": "Video ID",
+                "video_title": "Video Title",
+                "countries": "Countries Reached",
+                "country_list": "Country List",
+                "trending_records": "Trending Records"
+            },
+            "reaction_ratios": {
+                "video_id": "Video ID",
+                "video_title": "Video Title",
+                "views": "Views",
+                "Views": "Views",
+                "likes": "Likes",
+                "Likes": "Likes",
+                "dislikes": "Dislikes",
+                "Dislikes": "Dislikes",
+                "dislike_percentage": "Dislike Rate (%)",
+                "likes_per_dislike": "Likes Per Dislike"
+            }
+        }
         
         conn = cls.get_pg_connection()
         try:
-            return pd.read_sql(valid_views[view_name], conn)
-        finally:
-            conn.close()
-    # ------------------------------------------------------------------
-    # VIDEO KEYWORD SEARCH (POSTGRESQL)
-    # ------------------------------------------------------------------
-    @classmethod
-    def search_videos_with_keyword(cls, keyword):
-
-        sql = """
-            SELECT *
-            FROM search_videos_with_keyword(%s::text);
-        """
-
-        conn = cls.get_pg_connection()
-
-        try:
-            return pd.read_sql(sql,conn,params=(keyword,))
-
+            df = pd.read_sql(valid_views[view_name], conn)
+            if not df.empty and view_name in rename_mappings:
+                df = df.rename(columns=rename_mappings[view_name])
+            return df
         finally:
             conn.close()
 
     # ------------------------------------------------------------------
-    # RELATIONAL CRUD OPERATIONS (POSTGRESQL)
+    # INDIVIDUAL RELATIONAL CRUD (UPSERT BEHAVIOR)
     # ------------------------------------------------------------------
     @classmethod
     def insert_category(cls, cat_id, cat_name):
-        return cls._execute_transaction("SELECT insert_category(%s, %s::text);", (cat_id, cat_name))
+        sql = """
+            INSERT INTO Category (category_id, category_name)
+            VALUES (%s, %s::text)
+            ON CONFLICT (category_id) DO UPDATE SET category_name = EXCLUDED.category_name;
+        """
+        conn = cls.get_pg_connection()
+        cur = conn.cursor()
+        try:
+            cur.execute(sql, (cat_id, cat_name))
+            conn.commit()
+            return True
+        except Exception as e:
+            conn.rollback()
+            raise e
+        finally:
+            cur.close()
+            conn.close()
 
     @classmethod
     def insert_channel(cls, chan_id, chan_title):
-        return cls._execute_transaction("SELECT insert_channel(%s, %s::text);", (chan_id, chan_title))
+        sql = """
+            INSERT INTO Channel (channel_id, channel_title)
+            VALUES (%s, %s::text)
+            ON CONFLICT (channel_id) DO UPDATE SET channel_title = EXCLUDED.channel_title;
+        """
+        conn = cls.get_pg_connection()
+        cur = conn.cursor()
+        try:
+            cur.execute(sql, (chan_id, chan_title))
+            conn.commit()
+            return True
+        except Exception as e:
+            conn.rollback()
+            raise e
+        finally:
+            cur.close()
+            conn.close()
 
     @classmethod
     def insert_country(cls, code, name, pop):
-        return cls._execute_transaction("SELECT insert_country(%s::text, %s::text, %s);", (code.upper(), name, pop))
+        sql = """
+            INSERT INTO Country (country_code, country_name, population)
+            VALUES (%s::text, %s::text, %s)
+            ON CONFLICT (country_code) DO UPDATE 
+            SET country_name = EXCLUDED.country_name, population = EXCLUDED.population;
+        """
+        conn = cls.get_pg_connection()
+        cur = conn.cursor()
+        try:
+            cur.execute(sql, (code.upper(), name, pop))
+            conn.commit()
+            return True
+        except Exception as e:
+            conn.rollback()
+            raise e
+        finally:
+            cur.close()
+            conn.close()
 
     @classmethod
     def insert_video(cls, video_id, title, pub_dt, tag_count, chan_id, cat_id):
-        return cls._execute_transaction(
-            "SELECT insert_video(%s::text, %s::text, %s, %s, %s, %s);",
-            (video_id, title, pub_dt, tag_count, chan_id, cat_id)
-        )
+        sql = """
+            INSERT INTO Video (video_id, title, publish_time, tag_count, channel_id, category_id)
+            VALUES (%s::text, %s::text, %s, %s, %s, %s)
+            ON CONFLICT (video_id) DO UPDATE SET
+                title = EXCLUDED.title,
+                publish_time = EXCLUDED.publish_time,
+                tag_count = EXCLUDED.tag_count,
+                channel_id = EXCLUDED.channel_id,
+                category_id = EXCLUDED.category_id;
+        """
+        conn = cls.get_pg_connection()
+        cur = conn.cursor()
+        try:
+            cur.execute(sql, (video_id, title, pub_dt, tag_count, chan_id, cat_id))
+            conn.commit()
+            return True
+        except Exception as e:
+            conn.rollback()
+            raise e
+        finally:
+            cur.close()
+            conn.close()
 
     @classmethod
     def insert_channel_stats(cls, chan_id, c_code, rank, sub, views, uploads, dt_val, v30, s30):
-        return cls._execute_transaction(
-            "SELECT insert_channel_stats(%s, %s::text, %s, %s, %s, %s, %s, %s, %s);",
-            (chan_id, c_code.upper(), rank, sub, views, uploads, dt_val, v30, s30)
-        )
+        # Assumes primary key or unique constraint on (channel_id, country_code, stats_date)
+        sql = """
+            INSERT INTO Channel_Stats (channel_id, country_code, rank, subscribers, views, total_uploads, stats_date, views_30, subs_30)
+            VALUES (%s, %s::text, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (channel_id) DO UPDATE SET
+                country_code = EXCLUDED.country_code,
+                rank = EXCLUDED.rank,
+                subscribers = EXCLUDED.subscribers,
+                views = EXCLUDED.views,
+                total_uploads = EXCLUDED.total_uploads,
+                stats_date = EXCLUDED.stats_date,
+                views_30 = EXCLUDED.views_30,
+                subs_30 = EXCLUDED.subs_30;
+        """
+        conn = cls.get_pg_connection()
+        cur = conn.cursor()
+        try:
+            cur.execute(sql, (chan_id, c_code.upper(), rank, sub, views, uploads, dt_val, v30, s30))
+            conn.commit()
+            return True
+        except Exception as e:
+            conn.rollback()
+            raise e
+        finally:
+            cur.close()
+            conn.close()
 
     @classmethod
     def insert_trending_record(cls, rec_id, vid_id, c_code, t_date, views, likes, dislikes, comments):
-        return cls._execute_transaction(
-            "SELECT insert_trending_record(%s, %s::text, %s::text, %s, %s, %s, %s, %s);",
-            (rec_id, vid_id, c_code.upper(), t_date, views, likes, dislikes, comments)
-        )
+        sql = """
+            INSERT INTO Trending_Record (record_id, video_id, country_code, trending_date, views, likes, dislikes, comment_count)
+            VALUES (%s, %s::text, %s::text, %s, %s, %s, %s, %s)
+            ON CONFLICT (record_id) DO UPDATE SET
+                video_id = EXCLUDED.video_id,
+                country_code = EXCLUDED.country_code,
+                trending_date = EXCLUDED.trending_date,
+                views = EXCLUDED.views,
+                likes = EXCLUDED.likes,
+                dislikes = EXCLUDED.dislikes,
+                comment_count = EXCLUDED.comment_count;
+        """
+        conn = cls.get_pg_connection()
+        cur = conn.cursor()
+        try:
+            cur.execute(sql, (rec_id, vid_id, c_code.upper(), t_date, views, likes, dislikes, comments))
+            conn.commit()
+            return True
+        except Exception as e:
+            conn.rollback()
+            raise e
+        finally:
+            cur.close()
+            conn.close()
 
+    # ------------------------------------------------------------------
+    # BULK UPSERT OPERATIONS (POSTGRESQL & MONGODB)
+    # ------------------------------------------------------------------
+    @classmethod
+    def bulk_upsert_postgres(cls, table, records):
+        """
+        Bulk upsert list of dicts into PostgreSQL with ON CONFLICT DO UPDATE.
+        Overwrites any existing records that share the same primary key.
+        """
+        if not records:
+            return 0
+
+        conn = cls.get_pg_connection()
+        cur = conn.cursor()
+
+        queries = {
+            "Category": """
+                INSERT INTO Category (category_id, category_name)
+                VALUES (%(cat_id)s, %(cat_name)s)
+                ON CONFLICT (category_id) DO UPDATE SET category_name = EXCLUDED.category_name;
+            """,
+            "Channel": """
+                INSERT INTO Channel (channel_id, channel_title)
+                VALUES (%(chan_id)s, %(chan_title)s)
+                ON CONFLICT (channel_id) DO UPDATE SET channel_title = EXCLUDED.channel_title;
+            """,
+            "Country": """
+                INSERT INTO Country (country_code, country_name, population)
+                VALUES (%(code)s, %(name)s, %(pop)s)
+                ON CONFLICT (country_code) DO UPDATE 
+                SET country_name = EXCLUDED.country_name, population = EXCLUDED.population;
+            """,
+            "Video": """
+                INSERT INTO Video (video_id, title, publish_time, tag_count, channel_id, category_id)
+                VALUES (%(video_id)s, %(title)s, %(pub_dt)s, %(tag_count)s, %(channel_id)s, %(category_id)s)
+                ON CONFLICT (video_id) DO UPDATE SET
+                    title = EXCLUDED.title,
+                    publish_time = EXCLUDED.publish_time,
+                    tag_count = EXCLUDED.tag_count,
+                    channel_id = EXCLUDED.channel_id,
+                    category_id = EXCLUDED.category_id;
+            """,
+            "Channel Stats": """
+                INSERT INTO Channel_Stats (channel_id, country_code, rank, subscribers, views, total_uploads, stats_date, views_30, subs_30)
+                VALUES (%(chan_id)s, %(c_code)s, %(rank)s, %(sub)s, %(views)s, %(uploads)s, %(dt_val)s, %(v30)s, %(s30)s)
+                ON CONFLICT (channel_id) DO UPDATE SET
+                    country_code = EXCLUDED.country_code,
+                    rank = EXCLUDED.rank,
+                    subscribers = EXCLUDED.subscribers,
+                    views = EXCLUDED.views,
+                    total_uploads = EXCLUDED.total_uploads,
+                    stats_date = EXCLUDED.stats_date,
+                    views_30 = EXCLUDED.views_30,
+                    subs_30 = EXCLUDED.subs_30;
+            """,
+            "Trending Record": """
+                INSERT INTO Trending_Record (record_id, video_id, country_code, trending_date, views, likes, dislikes, comment_count)
+                VALUES (%(rec_id)s, %(vid_id)s, %(c_code)s, %(t_date)s, %(views)s, %(likes)s, %(dislikes)s, %(comments)s)
+                ON CONFLICT (record_id) DO UPDATE SET
+                    video_id = EXCLUDED.video_id,
+                    country_code = EXCLUDED.country_code,
+                    trending_date = EXCLUDED.trending_date,
+                    views = EXCLUDED.views,
+                    likes = EXCLUDED.likes,
+                    dislikes = EXCLUDED.dislikes,
+                    comment_count = EXCLUDED.comment_count;
+            """
+        }
+
+        query = queries.get(table)
+        if not query:
+            raise ValueError(f"Bulk insert not supported for {table}")
+
+        try:
+            for rec in records:
+                cur.execute(query, rec)
+            conn.commit()
+            return len(records)
+        except Exception as e:
+            conn.rollback()
+            raise e
+        finally:
+            cur.close()
+            conn.close()
+
+    @classmethod
+    def bulk_upsert_mongo_revenue(cls, documents):
+        """
+        Bulk upsert list of dicts into MongoDB using UpdateOne(..., upsert=True).
+        Overwrites any document with the same video_id.
+        """
+        if not documents:
+            return 0
+        col = cls.get_mongo_collection("revenue")
+        ops = [
+            pymongo.UpdateOne(
+                {"video_id": doc.get("video_id")},
+                {"$set": doc},
+                upsert=True
+            )
+            for doc in documents
+        ]
+        res = col.bulk_write(ops)
+        return (res.upserted_count or 0) + (res.modified_count or 0) + (res.matched_count or 0)
+
+    # ------------------------------------------------------------------
+    # MONGO CRUD (SINGLE)
+    # ------------------------------------------------------------------
+    @classmethod
+    def insert_mongo_revenue(cls, document_dict):
+        """Single upsert into MongoDB based on video_id."""
+        col = cls.get_mongo_collection("revenue")
+        col.update_one(
+            {"video_id": document_dict.get("video_id")},
+            {"$set": document_dict},
+            upsert=True
+        )
+        return True
+
+    @classmethod
+    def read_mongo_revenue(cls, video_id=None):
+        col = cls.get_mongo_collection("revenue")
+        query = {"video_id": video_id} if video_id else {}
+        cursor = col.find(query, {"_id": 0}).limit(100)
+        return pd.DataFrame(list(cursor))
+
+    @classmethod
+    def delete_mongo_revenue(cls, video_id):
+        col = cls.get_mongo_collection("revenue")
+        res = col.delete_one({"video_id": video_id})
+        return res.deleted_count > 0
+
+    # ------------------------------------------------------------------
+    # READ & DELETE HELPERS
+    # ------------------------------------------------------------------
     @classmethod
     def read_record(cls, table, identifier):
         identifier = str(identifier).strip()
@@ -146,7 +409,6 @@ class DataManager:
             else:
                 return pd.DataFrame()
         except ValueError:
-            # Raised if an alphabetic string is passed for an integer ID (e.g. 'abc' for Category)
             return pd.DataFrame()
 
         conn = cls.get_pg_connection()
@@ -188,34 +450,10 @@ class DataManager:
         return cls._execute_transaction(sql, params)
 
     # ------------------------------------------------------------------
-    # NON-RELATIONAL CRUD OPERATIONS (MONGODB)
-    # ------------------------------------------------------------------
-    @classmethod
-    def insert_mongo_revenue(cls, document_dict):
-        col = cls.get_mongo_collection("revenue")
-        if col.count_documents({"video_id": document_dict.get("video_id")}) > 0:
-            raise ValueError(f"Video ID '{document_dict.get('video_id')}' already exists in MongoDB.")
-        return col.insert_one(document_dict).acknowledged
-
-    @classmethod
-    def read_mongo_revenue(cls, video_id=None):
-        col = cls.get_mongo_collection("revenue")
-        query = {"video_id": video_id} if video_id else {}
-        cursor = col.find(query, {"_id": 0}).limit(100)
-        return pd.DataFrame(list(cursor))
-
-    @classmethod
-    def delete_mongo_revenue(cls, video_id):
-        col = cls.get_mongo_collection("revenue")
-        res = col.delete_one({"video_id": video_id})
-        return res.deleted_count > 0
-
-    # ------------------------------------------------------------------
-    # NON-RELATIONAL ANALYTICS (MONGODB)
+    # ANALYTICS & LOOKUP
     # ------------------------------------------------------------------
     @classmethod
     def aggregate_revenue_by_country(cls):
-        """Unwinds nested country revenue and sums total estimated gross revenue."""
         col = cls.get_mongo_collection("revenue")
         pipeline = [
             {"$unwind": "$revenue_by_country"},
@@ -233,7 +471,6 @@ class DataManager:
 
     @classmethod
     def aggregate_category_breakdown(cls):
-        """Counts the total videos per category_id in MongoDB."""
         col = cls.get_mongo_collection("revenue")
         pipeline = [
             {"$group": {
@@ -247,7 +484,6 @@ class DataManager:
         if not df.empty:
             if "_id" in df.columns:
                 df = df.rename(columns={"_id": "category_id"})
-            # Ensure total_videos column is explicitly integer
             if "total_videos" in df.columns:
                 df["total_videos"] = df["total_videos"].fillna(0).astype(int)
         return df
@@ -271,7 +507,6 @@ class DataManager:
                 "monetization": 1,
                 "sponsorships": 1,
                 "revenue_by_country": 1,
-                # Platform ad revenue
                 "ad_revenue": {
                     "$reduce": {
                         "input": {"$ifNull": ["$revenue_by_country", []]},
@@ -279,9 +514,7 @@ class DataManager:
                         "in": {"$add": ["$$value", {"$ifNull": ["$$this.estimated_gross_usd", 0.0]}]}
                     }
                 },
-                # Direct sponsorship revenue
                 "sponsorship_revenue": {"$ifNull": ["$revenue_summary.total_sponsorship_usd", 0.0]},
-                # Total combined revenue
                 "total_video_revenue": {
                     "$add": [
                         {
@@ -302,21 +535,14 @@ class DataManager:
 
     @classmethod
     def get_video_stats_by_id(cls, video_id):
-        """Fetches full monetization, ad format, and revenue stats for a single video."""
         col = cls.get_mongo_collection("revenue")
         doc = col.find_one({"video_id": str(video_id).strip()}, {"_id": 0})
         return doc if doc else {}
 
     @classmethod
     def compare_creator_tiers(cls):
-        """
-        Aggregates financial and monetization metrics across tiers:
-        calculates total revenue, average revenue per video, average playback rate,
-        and total videos to verify if higher tiers generate more revenue.
-        """
         col = cls.get_mongo_collection("revenue")
         pipeline = [
-            # 1. Compute total revenue and playback rate for each individual video document
             {"$project": {
                 "creator_tier": {"$toLower": "$creator_tier"},
                 "playback_rate": "$ads.monetized_playback_rate",
@@ -328,7 +554,6 @@ class DataManager:
                     }
                 }
             }},
-            # 2. Group by creator tier and calculate financial comparisons
             {"$group": {
                 "_id": "$creator_tier",
                 "total_videos": {"$sum": 1},
@@ -337,7 +562,6 @@ class DataManager:
                 "max_single_video_revenue": {"$max": "$video_revenue"},
                 "avg_playback_rate": {"$avg": "$playback_rate"}
             }},
-            # 3. Sort from highest grossing to lowest
             {"$sort": {"total_tier_revenue": -1}}
         ]
         results = list(col.aggregate(pipeline))
@@ -346,29 +570,100 @@ class DataManager:
             df = df.rename(columns={"_id": "creator_tier"})
         return df
 
-
     @classmethod
     def get_metadata_lookup_maps(cls):
-        """
-        Fetches title/name mappings from PostgreSQL:
-        - video_id -> video title
-        - channel_id -> channel_title
-        - category_id -> category_name
-        """
         conn = cls.get_pg_connection()
         try:
-            # 1. Video ID -> Title
             videos_df = pd.read_sql("SELECT video_id, title FROM Video;", conn)
             video_map = dict(zip(videos_df["video_id"], videos_df["title"]))
 
-            # 2. Channel ID -> Channel Title
             channels_df = pd.read_sql("SELECT channel_id, channel_title FROM Channel;", conn)
             channel_map = dict(zip(channels_df["channel_id"], channels_df["channel_title"]))
 
-            # 3. Category ID -> Category Name
             categories_df = pd.read_sql("SELECT category_id, category_name FROM Category;", conn)
             category_map = dict(zip(categories_df["category_id"], categories_df["category_name"]))
 
             return video_map, channel_map, category_map
+        finally:
+            conn.close()
+            
+    @classmethod
+    def search_records_by_name(cls, entity_type, term):
+        """
+        Viewer-facing search: Queries entities by human-readable names/titles
+        using case-insensitive partial matching (ILIKE).
+        """
+        term = f"%{str(term).strip()}%"
+        conn = cls.get_pg_connection()
+
+        queries = {
+            "Category": """
+                SELECT category_id, category_name 
+                FROM Category 
+                WHERE category_name ILIKE %s 
+                ORDER BY category_name LIMIT 50;
+            """,
+            "Channel": """
+                SELECT channel_id, channel_title 
+                FROM Channel 
+                WHERE channel_title ILIKE %s 
+                ORDER BY channel_title LIMIT 50;
+            """,
+            "Country": """
+                SELECT country_code, country_name, population 
+                FROM Country 
+                WHERE country_name ILIKE %s OR country_code ILIKE %s 
+                ORDER BY country_name LIMIT 50;
+            """,
+            "Video": """
+                SELECT v.video_id, v.title, v.publish_time, v.tag_count,
+                       c.channel_title, cat.category_name
+                FROM Video v
+                LEFT JOIN Channel c ON v.channel_id = c.channel_id
+                LEFT JOIN Category cat ON v.category_id = cat.category_id
+                WHERE v.title ILIKE %s
+                ORDER BY v.publish_time DESC LIMIT 50;
+            """
+        }
+
+        # Mapping raw database columns to dashboard titles
+        rename_mappings = {
+            "Category": {
+                "category_id": "Category ID",
+                "category_name": "Category Name"
+            },
+            "Channel": {
+                "channel_id": "Channel ID",
+                "channel_title": "Channel Title"
+            },
+            "Country": {
+                "country_code": "Country Code",
+                "country_name": "Country Name",
+                "population": "Population"
+            },
+            "Video": {
+                "video_id": "Video ID",
+                "title": "Video Title",
+                "publish_time": "Publish Time",
+                "tag_count": "Tag Count",
+                "channel_title": "Channel Name",
+                "category_name": "Category"
+            }
+        }
+
+        sql = queries.get(entity_type)
+        if not sql:
+            conn.close()
+            return pd.DataFrame()
+
+        try:
+            params = (term, term) if entity_type == "Country" else (term,)
+            df = pd.read_sql(sql, conn, params=params)
+
+            # Apply friendly header names
+            if not df.empty and entity_type in rename_mappings:
+                df = df.rename(columns=rename_mappings[entity_type])
+
+            return df
         finally:
             conn.close()

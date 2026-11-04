@@ -57,30 +57,58 @@ def logout():
 @login_required
 def dashboard():
     view_type = request.args.get("view", "category_views")
+    columns = []
+    records = []
+    error = None
     try:
         df = DataManager.fetch_analytical_view(view_type)
-        html_table = df.to_html(classes="table table-striped table-hover align-middle", index=False)
+        if not df.empty:
+            columns = df.columns.tolist()
+            records = df.to_dict(orient="records")
     except Exception as e:
-        html_table = f"<p class='text-danger'>Error executing analytical view: {str(e)}</p>"
-    return render_template("dashboard.html", table=html_table, current_view=view_type)
+        error = f"Error executing analytical view: {str(e)}"
+        
+    return render_template(
+        "dashboard.html",
+        columns=columns,
+        records=records,
+        current_view=view_type,
+        error=error
+    )
 
 @app.route("/crud", methods=["GET", "POST"])
 @login_required
 def crud():
     search_results = None
+    role = session.get("role")
+
     if request.method == "POST":
         action = request.form.get("action")
 
-        # Read operation (Viewer & Admin allowed)
-        if action == "read":
+        # Viewer-facing search by Name / Title
+        if action == "viewer_search":
+            entity_type = request.form.get("entity_type")
+            query_str = request.form.get("search_query")
+            success, msg, df = LogicManager.search_by_name(entity_type, query_str)
+            if msg:
+                flash(msg, "info" if success else "warning")
+            if df is not None and not df.empty:
+                search_results = df.to_html(
+                    classes="table table-striped table-hover align-middle mt-3",
+                    index=False,
+                    justify="left"
+                )
+
+        # Admin-facing raw PK lookup (Classic CRUD Read)
+        elif action == "read" and role == "admin":
             table = request.form.get("table")
             identifier = request.form.get("identifier")
             df = DataManager.read_record(table, identifier)
             search_results = df.to_html(classes="table table-bordered mt-3", index=False) if not df.empty else "No matching record found."
 
-        # Create/Delete operations (Admin only)
-        elif action in ["insert", "delete"]:
-            if not LogicManager.verify_role_access(session.get("role"), "admin"):
+        # Admin-only mutations
+        elif action in ["insert", "delete", "bulk_insert"]:
+            if not LogicManager.verify_role_access(role, "admin"):
                 flash("Unauthorized operation attempt blocked.", "danger")
                 return redirect(url_for("crud"))
 
@@ -88,6 +116,15 @@ def crud():
                 table = request.form.get("table")
                 success, msg = LogicManager.execute_insert(table, request.form)
                 flash(msg, "success" if success else "danger")
+
+            elif action == "bulk_insert":
+                table = request.form.get("table")
+                file = request.files.get("dataset_file")
+                if not file or file.filename == "":
+                    flash("Please select a valid dataset file (.csv or .json) to upload.", "warning")
+                else:
+                    success, msg = LogicManager.execute_bulk_insert(table, file)
+                    flash(msg, "success" if success else "danger")
 
             elif action == "delete":
                 table = request.form.get("table")
@@ -100,31 +137,21 @@ def crud():
 # ------------------------------------------------------------------
 # VIDEO KEYWORD SEARCH (VIEWER & ADMIN)
 # ------------------------------------------------------------------
-
 @app.route("/search", methods=["GET"])
 @login_required
 def search_videos():
-
-    # Get keyword entered in HTML search bar
     keyword = request.args.get("keyword", "").strip()
-
-    # Initialise results
     videos = []
     error = None
 
     if keyword:
         try:
-            # Search PostgreSQL using DataManager
             df = DataManager.search_videos_with_keyword(keyword)
-
-            # Convert DataFrame into dictionaries for HTML
             videos = df.to_dict(orient="records")
-
         except Exception:
             app.logger.exception("Video keyword search failed")
             error = "Unable to search videos. Please try again."
 
-    # Display results in search.html
     return render_template(
         "search.html",
         keyword=keyword,
@@ -135,7 +162,6 @@ def search_videos():
 # ------------------------------------------------------------------
 # MONGODB REVENUE ANALYTICS (VIEWER & ADMIN)
 # ------------------------------------------------------------------
-
 @app.route('/video-revenue', methods=['GET'])
 def video_revenue():
     action = request.args.get('action')
@@ -145,11 +171,9 @@ def video_revenue():
 
     try:
         if action == 'tier':
-            # 1. Fetch raw tier data from MongoDB
             df = DataManager.filter_by_creator_tier(tier=selected_tier)
             results = df.to_dict(orient="records")
 
-            # 2. Cross-reference PostgreSQL for Titles and Names
             if results:
                 video_map, channel_map, category_map = DataManager.get_metadata_lookup_maps()
                 for item in results:
@@ -157,7 +181,6 @@ def video_revenue():
                     c_id = item.get("channel_id")
                     cat_id = item.get("category_id")
 
-                    # Attach readable names from PostgreSQL (fallback to ID if not found)
                     item["video_title"] = video_map.get(v_id, f"Video {v_id}")
                     item["channel_name"] = channel_map.get(c_id, f"Channel {c_id}")
                     item["category_name"] = category_map.get(cat_id, f"Category {cat_id}")
@@ -170,13 +193,11 @@ def video_revenue():
             df = DataManager.aggregate_category_breakdown()
             results = df.to_dict(orient="records")
             
-            # Enrich with PostgreSQL Category Names while preserving counts
             if results:
                 try:
                     _, _, category_map = DataManager.get_metadata_lookup_maps()
                     for item in results:
                         cat_id = item.get("category_id") or item.get("_id")
-                        # Match integer key with postgres map
                         item["category_name"] = category_map.get(int(cat_id) if cat_id is not None else None, f"Category {cat_id}")
                 except Exception as ex:
                     print(f"Error enriching categories: {ex}")
@@ -202,7 +223,6 @@ def get_video_stats(video_id):
     if not stats:
         return {"error": "Video not found"}, 404
 
-    # Cross-reference Postgres for titles
     try:
         video_map, channel_map, category_map = DataManager.get_metadata_lookup_maps()
         stats["video_title"] = video_map.get(stats.get("video_id"), "Unknown Title")

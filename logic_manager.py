@@ -1,3 +1,6 @@
+import io
+import json
+import pandas as pd
 import datetime as dt
 from data_manager import DataManager
 
@@ -70,13 +73,12 @@ class LogicManager:
         title = str(data.get("title", "")).strip()
         pub_date = data.get("pub_date")
         pub_time = data.get("pub_time", "00:00")
+        publish_time_raw = data.get("publish_time")
 
         if len(vid_id) != 11:
             return False, "Video ID must be exactly 11 characters."
         if not title:
             return False, "Title cannot be blank."
-        if not pub_date:
-            return False, "Publish Date is required."
 
         try:
             tag_count = int(data.get("tag_count", 0))
@@ -84,7 +86,14 @@ class LogicManager:
             cat_id = int(data.get("category_id", 0))
             if tag_count < 0 or chan_id < 1 or cat_id < 1:
                 return False, "IDs must be >= 1, tag count must be non-negative."
-            pub_dt = dt.datetime.strptime(f"{pub_date} {pub_time}", "%Y-%m-%d %H:%M")
+
+            if publish_time_raw:
+                pub_dt = pd.to_datetime(publish_time_raw).to_pydatetime()
+            elif pub_date:
+                pub_dt = dt.datetime.strptime(f"{pub_date} {pub_time}", "%Y-%m-%d %H:%M")
+            else:
+                return False, "Publish time or date is required."
+
             return True, {
                 "video_id": vid_id, "title": title, "pub_dt": pub_dt,
                 "tag_count": tag_count, "channel_id": chan_id, "category_id": cat_id
@@ -140,20 +149,18 @@ class LogicManager:
     def validate_revenue_record(data):
         try:
             vid_id = str(data.get("video_id", "")).strip()
-            rev = float(data.get("estimated_revenue", 0.0))
-            playbacks = int(data.get("monetized_playbacks", 0))
-            if len(vid_id) != 11 or rev < 0 or playbacks < 0:
-                return False, "Video ID must be 11 chars; revenue and playbacks must be >= 0."
-            return True, {
-                "video_id": vid_id,
-                "estimated_revenue": rev,
-                "monetized_playbacks": playbacks
-            }
+            if len(vid_id) != 11:
+                return False, "Video ID must be 11 chars."
+            # Clean dict copy for MongoDB
+            clean_doc = dict(data)
+            clean_doc["video_id"] = vid_id
+            clean_doc.pop("_id", None)
+            return True, clean_doc
         except Exception:
             return False, "Invalid inputs for Revenue Record."
 
     # ------------------------------------------------------------------
-    # COORDINATION WITH DATA MANAGER
+    # SINGLE INSERT EXECUTION (UPSERT)
     # ------------------------------------------------------------------
     @classmethod
     def execute_insert(cls, table, payload):
@@ -162,19 +169,19 @@ class LogicManager:
                 valid, res = cls.validate_category(payload)
                 if not valid: return False, res
                 DataManager.insert_category(res["cat_id"], res["cat_name"])
-                return True, f"Category '{res['cat_name']}' created successfully."
+                return True, f"Category '{res['cat_name']}' saved/overwritten successfully."
 
             elif table == "Channel":
                 valid, res = cls.validate_channel(payload)
                 if not valid: return False, res
                 DataManager.insert_channel(res["chan_id"], res["chan_title"])
-                return True, f"Channel '{res['chan_title']}' created successfully."
+                return True, f"Channel '{res['chan_title']}' saved/overwritten successfully."
 
             elif table == "Country":
                 valid, res = cls.validate_country(payload)
                 if not valid: return False, res
                 DataManager.insert_country(res["code"], res["name"], res["pop"])
-                return True, f"Country '{res['name']}' added successfully."
+                return True, f"Country '{res['name']}' saved/overwritten successfully."
 
             elif table == "Video":
                 valid, res = cls.validate_video(payload)
@@ -183,7 +190,7 @@ class LogicManager:
                     res["video_id"], res["title"], res["pub_dt"],
                     res["tag_count"], res["channel_id"], res["category_id"]
                 )
-                return True, f"Video '{res['video_id']}' added successfully."
+                return True, f"Video '{res['video_id']}' saved/overwritten successfully."
 
             elif table == "Channel Stats":
                 valid, res = cls.validate_channel_stats(payload)
@@ -192,7 +199,7 @@ class LogicManager:
                     res["chan_id"], res["c_code"], res["rank"], res["sub"],
                     res["views"], res["uploads"], res["dt_val"], res["v30"], res["s30"]
                 )
-                return True, "Channel Stats record created successfully."
+                return True, "Channel Stats record saved/overwritten successfully."
 
             elif table == "Trending Record":
                 valid, res = cls.validate_trending_record(payload)
@@ -201,17 +208,69 @@ class LogicManager:
                     res["rec_id"], res["vid_id"], res["c_code"], res["t_date"],
                     res["views"], res["likes"], res["dislikes"], res["comments"]
                 )
-                return True, f"Trending Record #{res['rec_id']} added successfully."
+                return True, f"Trending Record #{res['rec_id']} saved/overwritten successfully."
 
             elif table == "Revenue Record":
                 valid, res = cls.validate_revenue_record(payload)
                 if not valid: return False, res
                 DataManager.insert_mongo_revenue(res)
-                return True, f"MongoDB Revenue Record for '{res['video_id']}' created successfully."
+                return True, f"MongoDB Revenue Record for '{res['video_id']}' saved/overwritten successfully."
 
             return False, "Unsupported target table specified."
         except Exception as e:
-            return False, f"Database insert failure: {str(e)}"
+            return False, f"Database operation failure: {str(e)}"
+
+    # ------------------------------------------------------------------
+    # BULK FILE INSERTION (CSV & JSON)
+    # ------------------------------------------------------------------
+    @classmethod
+    def execute_bulk_insert(cls, table, file_obj):
+        """Parses CSV or JSON file upload, validates each record, and performs upsert."""
+        filename = file_obj.filename.lower()
+        try:
+            if filename.endswith(".csv"):
+                df = pd.read_csv(file_obj)
+                records = df.where(pd.notnull(df), None).to_dict(orient="records")
+            elif filename.endswith(".json"):
+                data = json.load(file_obj)
+                records = data if isinstance(data, list) else [data]
+            else:
+                return False, "Unsupported file format. Please upload a .csv or .json dataset."
+
+            if not records:
+                return False, "Uploaded file contains no rows or data."
+
+            validators = {
+                "Category": cls.validate_category,
+                "Channel": cls.validate_channel,
+                "Country": cls.validate_country,
+                "Video": cls.validate_video,
+                "Channel Stats": cls.validate_channel_stats,
+                "Trending Record": cls.validate_trending_record,
+                "Revenue Record": cls.validate_revenue_record
+            }
+
+            validator = validators.get(table)
+            if not validator:
+                return False, f"Unsupported table '{table}' for bulk insert."
+
+            valid_records = []
+            for idx, r in enumerate(records, start=1):
+                is_valid, cleaned_or_err = validator(r)
+                if not is_valid:
+                    return False, f"Row {idx} failed validation: {cleaned_or_err}"
+                valid_records.append(cleaned_or_err)
+
+            # Route to MongoDB or PostgreSQL
+            if table == "Revenue Record":
+                count = DataManager.bulk_upsert_mongo_revenue(valid_records)
+                return True, f"Successfully processed/overwrote {count} document(s) in MongoDB Atlas."
+            else:
+                count = DataManager.bulk_upsert_postgres(table, valid_records)
+                return True, f"Successfully processed/overwrote {count} record(s) in PostgreSQL."
+
+        except Exception as e:
+            return False, f"Bulk import error: {str(e)}"
 
     @classmethod
     def execute_delete(cls, table, identifier):
@@ -225,3 +284,18 @@ class LogicManager:
             return (True, f"Record '{identifier}' deleted.") if success else (False, "Record not found.")
         except Exception as e:
             return False, f"Integrity error: {str(e)}"
+        
+    @classmethod
+    def search_by_name(cls, entity_type, query_str):
+        clean_query = str(query_str or "").strip()
+        if len(clean_query) < 1:
+            return False, "Please enter at least 1 character to search.", None
+        
+        valid_entities = ["Category", "Channel", "Country", "Video"]
+        if entity_type not in valid_entities:
+            return False, "Invalid entity selected.", None
+
+        df = DataManager.search_records_by_name(entity_type, clean_query)
+        if df.empty:
+            return True, f"No {entity_type.lower()} records matched '{clean_query}'.", df
+        return True, None, df

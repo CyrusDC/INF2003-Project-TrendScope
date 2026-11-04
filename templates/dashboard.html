@@ -4,6 +4,7 @@
     <a href="{{ url_for('video_revenue') }}" class="btn btn-success">Revenue Analytics</a>
     <a href="{{ url_for('search_videos') }}" class="btn btn-success">Search Videos</a>
 </div>
+
 <div class="d-flex justify-content-between align-items-center mb-3">
     <h3>Analytical Views</h3>
     <div class="btn-group">
@@ -13,9 +14,105 @@
         <a href="?view=reaction_ratios" class="btn btn-outline-primary {% if current_view == 'reaction_ratios' %}active{% endif %}">Reaction Ratios</a>
     </div>
 </div>
+
 <div class="card shadow-sm p-3 mb-5 bg-white rounded">
-    <div class="table-responsive">
-        {{ table | safe }}
-    </div>
+    {% if error %}
+        <div class="alert alert-danger mb-0">{{ error }}</div>
+    {% elif records %}
+        <div class="d-flex justify-content-between align-items-center mb-2">
+            <span class="text-muted small">Tip: Click any column header to sort <strong>Ascending ▲</strong> or <strong>Descending ▼</strong>.</span>
+            <span class="badge bg-secondary">{{ records|length }} Records</span>
+        </div>
+        <div class="table-responsive">
+            <table class="table table-striped table-hover align-middle mb-0" id="analyticalTable">
+                <thead class="table-dark">
+                    <tr>
+                        {% for col in columns %}
+                            <th scope="col" class="sortable-header user-select-none text-nowrap" style="cursor: pointer;" onclick="sortTable({{ loop.index0 }})">
+                                <div class="d-inline-flex align-items-center justify-content-between w-100 gap-2">
+                                    <span>{{ col }}</span>
+                                    <span class="sort-icon text-white-50" id="sort-icon-{{ loop.index0 }}">⇅</span>
+                                </div>
+                            </th>
+                        {% endfor %}
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in records %}
+                        <tr>
+                            {% for col in columns %}
+                                <td>
+                                    {% set val = row[col] %}
+                                    {% if val is none %}
+                                        <span class="text-muted">-</span>
+                                    {% elif 'Views' in col or 'Likes' in col or 'Dislikes' in col or 'Subscribers' in col or 'Uploads' in col or 'Count' in col or 'Records' in col or 'Countries Reached' in col %}
+                                        {% if 'Avg' in col or 'Per' in col %}
+                                            {{ "{:,.1f}".format(val|float) if val is number else val }}
+                                        {% else %}
+                                            {{ "{:,.0f}".format(val|float) if val is number else val }}
+                                        {% endif %}
+                                    {% elif '%' in col or 'Rate' in col or 'Share' in col or 'Ratio' in col or 'Likes Per Dislike' in col %}
+                                        {{ "{:,.1f}".format(val|float) if val is number else val }}
+                                    {% else %}
+                                        {{ val }}
+                                    {% endif %}
+                                </td>
+                            {% endfor %}
+                        </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    {% else %}
+        <div class="alert alert-warning mb-0">No records found for this analytical view.</div>
+    {% endif %}
 </div>
+
+<script>
+let currentSortCol = -1;
+let currentSortAsc = true;
+
+function sortTable(columnIndex) {
+    const table = document.getElementById("analyticalTable");
+    const tbody = table.querySelector("tbody");
+    const rows = Array.from(tbody.querySelectorAll("tr"));
+    
+    if (currentSortCol === columnIndex) {
+        currentSortAsc = !currentSortAsc;
+    } else {
+        currentSortCol = columnIndex;
+        currentSortAsc = true;
+    }
+
+    document.querySelectorAll(".sort-icon").forEach(icon => {
+        icon.textContent = "⇅";
+        icon.classList.add("text-white-50");
+    });
+
+    const activeIcon = document.getElementById(`sort-icon-${columnIndex}`);
+    if (activeIcon) {
+        activeIcon.textContent = currentSortAsc ? "▲" : "▼";
+        activeIcon.classList.remove("text-white-50");
+    }
+
+    rows.sort((rowA, rowB) => {
+        let cellA = rowA.children[columnIndex].innerText.trim().replace(/,/g, '');
+        let cellB = rowB.children[columnIndex].innerText.trim().replace(/,/g, '');
+
+        let numA = parseFloat(cellA);
+        let numB = parseFloat(cellB);
+
+        if (!isNaN(numA) && !isNaN(numB)) {
+            return currentSortAsc ? numA - numB : numB - numA;
+        }
+
+        return currentSortAsc 
+            ? cellA.localeCompare(cellB, undefined, { numeric: true, sensitivity: 'base' })
+            : cellB.localeCompare(cellA, undefined, { numeric: true, sensitivity: 'base' });
+    });
+
+    tbody.innerHTML = "";
+    rows.forEach(r => tbody.appendChild(r));
+}
+</script>
 {% endblock %}
