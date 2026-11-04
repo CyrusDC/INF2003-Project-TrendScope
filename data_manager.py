@@ -101,6 +101,22 @@ class DataManager:
         finally:
             conn.close()
 
+    @classmethod
+    def search_videos_with_keyword(cls, keyword):
+
+        sql = """
+            SELECT *
+            FROM search_videos_with_keyword(%s::text);
+        """
+
+        conn = cls.get_pg_connection()
+
+        try:
+            return pd.read_sql(sql,conn,params=(keyword,))
+
+        finally:
+            conn.close()
+
     # ------------------------------------------------------------------
     # INDIVIDUAL RELATIONAL CRUD (UPSERT BEHAVIOR)
     # ------------------------------------------------------------------
