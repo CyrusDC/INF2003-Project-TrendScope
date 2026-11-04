@@ -141,20 +141,42 @@ def crud():
 @login_required
 def search_videos():
     keyword = request.args.get("keyword", "").strip()
+    country = request.args.get("country", "all")
+    category = request.args.get("category", "all")
+    start_date = request.args.get("start_date", "").strip()
+    end_date = request.args.get("end_date", "").strip()
+    
     videos = []
     error = None
+    categories = []
+    countries = []
 
-    if keyword:
-        try:
-            df = DataManager.search_videos_with_keyword(keyword)
+    try:
+        categories, countries = DataManager.get_filter_dropdown_options()
+        
+        # Run search if any filter parameter is specified
+        if keyword or country != "all" or category != "all" or start_date or end_date:
+            df = DataManager.explore_trending_videos(
+                keyword=keyword,
+                country=country,
+                category_id=category,
+                start_date=start_date or None,
+                end_date=end_date or None
+            )
             videos = df.to_dict(orient="records")
-        except Exception:
-            app.logger.exception("Video keyword search failed")
-            error = "Unable to search videos. Please try again."
+    except Exception as e:
+        app.logger.exception("Video search failed")
+        error = f"Search query failed: {str(e)}"
 
     return render_template(
         "search.html",
         keyword=keyword,
+        selected_country=country,
+        selected_category=category,
+        start_date=start_date,
+        end_date=end_date,
+        categories=categories,
+        countries=countries,
         videos=videos,
         error=error
     )
@@ -205,6 +227,12 @@ def video_revenue():
         elif action == 'compare':
             df = DataManager.compare_creator_tiers()
             results = df.to_dict(orient="records")
+        
+        elif action == 'claims':
+            policy = request.args.get('policy', 'all')
+            outcome = request.args.get('outcome', 'all')
+            df = DataManager.get_copyright_claims_summary(policy_filter=policy, outcome_filter=outcome)
+            results = df.to_dict(orient="records")
 
     except Exception as e:
         error = f"Database error: {str(e)}"
@@ -214,6 +242,8 @@ def video_revenue():
         action_type=action,
         selected_tier=selected_tier,
         results=results,
+        selected_policy=request.args.get('policy', 'all'),
+        selected_outcome=request.args.get('outcome', 'all'),
         error=error
     )
 
@@ -232,6 +262,24 @@ def get_video_stats(video_id):
         pass
 
     return stats
+
+# ------------------------------------------------------------------
+# PERFORMANCE BENCHMARK VIEW
+# ------------------------------------------------------------------
+@app.route("/benchmark", methods=["GET", "POST"])
+@login_required
+def benchmark():
+    results = None
+    if request.method == "POST":
+        try:
+            from benchmark import run_benchmarks
+            df = run_benchmarks(iterations=10) # 10 runs for fast UI response
+            results = df.to_dict(orient="records")
+            flash("Benchmark run completed successfully!", "success")
+        except Exception as e:
+            flash(f"Benchmark run failed: {str(e)}", "danger")
+
+    return render_template("benchmark.html", results=results)
 
 if __name__ == "__main__":
     app.run(host="127.0.0.1", port=5000, debug=True)

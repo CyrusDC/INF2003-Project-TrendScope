@@ -683,3 +683,120 @@ class DataManager:
             return df
         finally:
             conn.close()
+    
+    @classmethod
+    def get_copyright_claims_summary(cls, policy_filter=None, outcome_filter=None):
+        """
+        Unwinds the nested copyright_claims array, filters by policy/outcome,
+        and aggregates claims grouped by claimant.
+        Satisfies Proposal 4.2: $unwind, $match, and $group.
+        """
+        col = cls.get_mongo_collection("revenue")
+
+        pipeline = [
+            # 1. Only include documents with copyright_claims
+            {"$match": {"copyright_claims": {"$exists": True, "$ne": []}}},
+            # 2. Flatten the nested array of claims
+            {"$unwind": "$copyright_claims"}
+        ]
+
+        # 3. Dynamic $match for policy and dispute outcome filters
+        match_conditions = {}
+        if policy_filter and policy_filter != "all":
+            match_conditions["copyright_claims.policy"] = policy_filter
+        if outcome_filter and outcome_filter != "all":
+            match_conditions["copyright_claims.dispute_outcome"] = outcome_filter
+
+        if match_conditions:
+            pipeline.append({"$match": match_conditions})
+
+        # 4. Group by claimant to aggregate total disputes and claims
+        pipeline.extend([
+            {"$group": {
+                "_id": "$copyright_claims.claimant",
+                "total_claims": {"$sum": 1},
+                "policies": {"$addToSet": "$copyright_claims.policy"},
+                "dispute_outcomes": {"$addToSet": "$copyright_claims.dispute_outcome"},
+                "claimed_videos": {"$addToSet": "$video_id"}
+            }},
+            {"$project": {
+                "_id": 0,
+                "claimant": "$_id",
+                "total_claims": 1,
+                "policies": 1,
+                "dispute_outcomes": 1,
+                "video_count": {"$size": "$claimed_videos"}
+            }},
+            {"$sort": {"total_claims": -1}}
+        ])
+
+        results = list(col.aggregate(pipeline))
+        return pd.DataFrame(results)
+    
+    @classmethod
+    def get_filter_dropdown_options(cls):
+        """Fetches distinct categories and countries to populate filter dropdowns."""
+        conn = cls.get_pg_connection()
+        try:
+            cats = pd.read_sql("SELECT category_id, category_name FROM Category ORDER BY category_name;", conn)
+            countries = pd.read_sql("SELECT country_code, country_name FROM Country ORDER BY country_name;", conn)
+            return cats.to_dict(orient="records"), countries.to_dict(orient="records")
+        finally:
+            conn.close()
+
+    @classmethod
+    def explore_trending_videos(cls, keyword=None, country=None, category_id=None, start_date=None, end_date=None):
+        """
+        Multi-table join (Video, Category, Channel, Trending_Record) with indexed range queries.
+        Satisfies Proposal 4.1: Trending Explorer.
+        """
+        conditions = ["1=1"]
+        params = []
+
+        if keyword:
+            conditions.append("v.title ILIKE %s")
+            params.append(f"%{keyword.strip()}%")
+
+        if country and country != "all":
+            conditions.append("tr.country_code = %s")
+            params.append(country.strip().upper())
+
+        if category_id and category_id != "all":
+            conditions.append("v.category_id = %s")
+            params.append(int(category_id))
+
+        if start_date:
+            conditions.append("tr.trending_date >= %s")
+            params.append(start_date)
+
+        if end_date:
+            conditions.append("tr.trending_date <= %s")
+            params.append(end_date)
+
+        where_clause = " AND ".join(conditions)
+
+        sql = f"""
+            SELECT 
+                v.video_id,
+                v.title,
+                c.channel_title,
+                cat.category_name,
+                tr.country_code,
+                tr.trending_date,
+                tr.views,
+                tr.likes,
+                tr.dislikes
+            FROM Trending_Record tr
+            JOIN Video v ON tr.video_id = v.video_id
+            JOIN Channel c ON v.channel_id = c.channel_id
+            JOIN Category cat ON v.category_id = cat.category_id
+            WHERE {where_clause}
+            ORDER BY tr.views DESC
+            LIMIT 100;
+        """
+
+        conn = cls.get_pg_connection()
+        try:
+            return pd.read_sql(sql, conn, params=tuple(params))
+        finally:
+            conn.close()

@@ -126,24 +126,43 @@ class LogicManager:
     @staticmethod
     def validate_trending_record(data):
         try:
-            rec_id = int(data.get("record_id", 0))
+            # Helper to safely parse ints with empty-string fallback to default
+            def to_int(val, default=0):
+                v = str(val).strip() if val is not None else ""
+                return int(v) if v != "" else default
+
+            rec_id_val = data.get("record_id")
+            if not rec_id_val or str(rec_id_val).strip() == "":
+                return False, "Record ID is required."
+            
+            rec_id = int(str(rec_id_val).strip())
             vid_id = str(data.get("video_id", "")).strip()
             c_code = str(data.get("country_code", "")).strip().upper()
-            t_date = data.get("trending_date")
-            views = int(data.get("views", 0))
-            likes = int(data.get("likes", 0))
-            dislikes = int(data.get("dislikes", 0))
-            comments = int(data.get("comment_count", 0))
+            t_date = data.get("trending_date", "").strip() if data.get("trending_date") else ""
 
-            if rec_id < 1 or len(vid_id) != 11 or len(c_code) != 2 or not t_date:
-                return False, "Invalid record ID, video ID (11 chars), country code (2 chars), or date."
+            views = to_int(data.get("views"), 0)
+            likes = to_int(data.get("likes"), 0)
+            dislikes = to_int(data.get("dislikes"), 0)
+            comments = to_int(data.get("comment_count"), 0)
+
+            if rec_id < 1:
+                return False, "Record ID must be an integer greater than 0."
+            if len(vid_id) != 11:
+                return False, f"Video ID must be exactly 11 characters (you entered {len(vid_id)})."
+            if len(c_code) != 2:
+                return False, f"Country Code must be 2 characters (e.g. US, SG). Received '{c_code}'."
+            if not t_date:
+                return False, "Trending Date is required."
+
             return True, {
                 "rec_id": rec_id, "vid_id": vid_id, "c_code": c_code,
                 "t_date": t_date, "views": views, "likes": likes,
                 "dislikes": dislikes, "comments": comments
             }
-        except Exception:
-            return False, "Invalid numerical or date inputs in Trending Record."
+        except (ValueError, TypeError) as e:
+            return False, f"Invalid numerical value entered: {str(e)}"
+        except Exception as e:
+            return False, f"Validation error: {str(e)}"
 
     @staticmethod
     def validate_revenue_record(data):
@@ -218,7 +237,12 @@ class LogicManager:
 
             return False, "Unsupported target table specified."
         except Exception as e:
-            return False, f"Database operation failure: {str(e)}"
+            err_msg = str(e)
+            if "Constraint Violation:" in err_msg:
+                # Strip PostgreSQL internal context lines and show just the violation
+                clean_err = err_msg.split("CONTEXT:")[0].replace("ERROR:", "").strip()
+                return False, clean_err
+            return False, f"Database operation failure: {err_msg}"
 
     # ------------------------------------------------------------------
     # BULK FILE INSERTION (CSV & JSON)
