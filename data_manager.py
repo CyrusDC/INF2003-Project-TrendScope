@@ -54,7 +54,7 @@ class DataManager:
         }
         if view_name not in valid_views:
             raise ValueError("Invalid view identifier.")
-
+    #When recieve from SQL the table header needs to be remap
         rename_mappings = {
             "category_views": {
                 "category_name": "Category Name",
@@ -121,146 +121,81 @@ class DataManager:
     # INDIVIDUAL RELATIONAL CRUD (UPSERT BEHAVIOR)
     # ------------------------------------------------------------------
     @classmethod
-    def insert_category(cls, cat_id, cat_name):
-        sql = """
-            INSERT INTO Category (category_id, category_name)
-            VALUES (%s, %s::text)
-            ON CONFLICT (category_id) DO UPDATE SET category_name = EXCLUDED.category_name;
-        """
+    def _execute_insert(cls, query, params):
         conn = cls.get_pg_connection()
-        cur = conn.cursor()
         try:
-            cur.execute(sql, (cat_id, cat_name))
+            with conn.cursor() as cur:
+                cur.execute(query, params)
             conn.commit()
             return True
-        except Exception as e:
+        except Exception:
             conn.rollback()
-            raise e
+            raise
         finally:
-            cur.close()
             conn.close()
+
+    @classmethod
+    def insert_category(cls, cat_id, cat_name):
+        return cls._execute_insert(
+            "SELECT public.upsert_category(%s, %s::text);",
+            (cat_id, cat_name)
+        )
+
 
     @classmethod
     def insert_channel(cls, chan_id, chan_title):
-        sql = """
-            INSERT INTO Channel (channel_id, channel_title)
-            VALUES (%s, %s::text)
-            ON CONFLICT (channel_id) DO UPDATE SET channel_title = EXCLUDED.channel_title;
-        """
-        conn = cls.get_pg_connection()
-        cur = conn.cursor()
-        try:
-            cur.execute(sql, (chan_id, chan_title))
-            conn.commit()
-            return True
-        except Exception as e:
-            conn.rollback()
-            raise e
-        finally:
-            cur.close()
-            conn.close()
+        return cls._execute_insert(
+            "SELECT public.upsert_channel(%s, %s::text);",
+            (chan_id, chan_title)
+        )
+
 
     @classmethod
     def insert_country(cls, code, name, pop):
-        sql = """
-            INSERT INTO Country (country_code, country_name, population)
-            VALUES (%s::text, %s::text, %s)
-            ON CONFLICT (country_code) DO UPDATE 
-            SET country_name = EXCLUDED.country_name, population = EXCLUDED.population;
-        """
-        conn = cls.get_pg_connection()
-        cur = conn.cursor()
-        try:
-            cur.execute(sql, (code.upper(), name, pop))
-            conn.commit()
-            return True
-        except Exception as e:
-            conn.rollback()
-            raise e
-        finally:
-            cur.close()
-            conn.close()
+        return cls._execute_insert(
+            "SELECT public.upsert_country(%s::text, %s::text, %s);",
+            (code.upper(), name, pop)
+        )
+
 
     @classmethod
-    def insert_video(cls, video_id, title, pub_dt, tag_count, chan_id, cat_id):
-        sql = """
-            INSERT INTO Video (video_id, title, publish_time, tag_count, channel_id, category_id)
-            VALUES (%s::text, %s::text, %s, %s, %s, %s)
-            ON CONFLICT (video_id) DO UPDATE SET
-                title = EXCLUDED.title,
-                publish_time = EXCLUDED.publish_time,
-                tag_count = EXCLUDED.tag_count,
-                channel_id = EXCLUDED.channel_id,
-                category_id = EXCLUDED.category_id;
-        """
-        conn = cls.get_pg_connection()
-        cur = conn.cursor()
-        try:
-            cur.execute(sql, (video_id, title, pub_dt, tag_count, chan_id, cat_id))
-            conn.commit()
-            return True
-        except Exception as e:
-            conn.rollback()
-            raise e
-        finally:
-            cur.close()
-            conn.close()
+    def insert_video(
+        cls, video_id, title, pub_dt, tag_count, chan_id, cat_id
+    ):
+        return cls._execute_insert(
+            """
+            SELECT public.upsert_video(%s::text, %s::text, %s, %s, %s, %s);
+            """,
+            (video_id, title, pub_dt, tag_count, chan_id, cat_id)
+        )
+
 
     @classmethod
-    def insert_channel_stats(cls, chan_id, c_code, rank, sub, views, uploads, dt_val, v30, s30):
-        # Assumes primary key or unique constraint on (channel_id, country_code, stats_date)
-        sql = """
-            INSERT INTO Channel_Stats (channel_id, country_code, rank, subscribers, views, total_uploads, stats_date, views_30, subs_30)
-            VALUES (%s, %s::text, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (channel_id) DO UPDATE SET
-                country_code = EXCLUDED.country_code,
-                rank = EXCLUDED.rank,
-                subscribers = EXCLUDED.subscribers,
-                views = EXCLUDED.views,
-                total_uploads = EXCLUDED.total_uploads,
-                stats_date = EXCLUDED.stats_date,
-                views_30 = EXCLUDED.views_30,
-                subs_30 = EXCLUDED.subs_30;
-        """
-        conn = cls.get_pg_connection()
-        cur = conn.cursor()
-        try:
-            cur.execute(sql, (chan_id, c_code.upper(), rank, sub, views, uploads, dt_val, v30, s30))
-            conn.commit()
-            return True
-        except Exception as e:
-            conn.rollback()
-            raise e
-        finally:
-            cur.close()
-            conn.close()
+    def insert_channel_stats(
+        cls, chan_id, c_code, rank, sub, views, uploads, dt_val, v30, s30
+    ):
+        return cls._execute_insert(
+            """
+            SELECT public.upsert_channel_stats(%s, %s::text, %s, %s, %s, %s, %s, %s, %s);
+            """,
+            (
+                chan_id, c_code.upper(), rank, sub, views, uploads, dt_val, v30, s30
+            )
+        )
+
 
     @classmethod
-    def insert_trending_record(cls, rec_id, vid_id, c_code, t_date, views, likes, dislikes, comments):
-        sql = """
-            INSERT INTO Trending_Record (record_id, video_id, country_code, trending_date, views, likes, dislikes, comment_count)
-            VALUES (%s, %s::text, %s::text, %s, %s, %s, %s, %s)
-            ON CONFLICT (record_id) DO UPDATE SET
-                video_id = EXCLUDED.video_id,
-                country_code = EXCLUDED.country_code,
-                trending_date = EXCLUDED.trending_date,
-                views = EXCLUDED.views,
-                likes = EXCLUDED.likes,
-                dislikes = EXCLUDED.dislikes,
-                comment_count = EXCLUDED.comment_count;
-        """
-        conn = cls.get_pg_connection()
-        cur = conn.cursor()
-        try:
-            cur.execute(sql, (rec_id, vid_id, c_code.upper(), t_date, views, likes, dislikes, comments))
-            conn.commit()
-            return True
-        except Exception as e:
-            conn.rollback()
-            raise e
-        finally:
-            cur.close()
-            conn.close()
+    def insert_trending_record(
+        cls, rec_id, vid_id, c_code, t_date, views, likes, dislikes, comments
+    ):
+        return cls._execute_insert(
+            """
+            SELECT public.upsert_trending_record(%s, %s::text, %s::text, %s, %s, %s, %s, %s);
+            """,
+            (
+                rec_id, vid_id, c_code.upper(), t_date, views, likes, dislikes, comments
+            )
+        )
 
     # ------------------------------------------------------------------
     # BULK UPSERT OPERATIONS (POSTGRESQL & MONGODB)
@@ -268,83 +203,55 @@ class DataManager:
     @classmethod
     def bulk_upsert_postgres(cls, table, records):
         """
-        Bulk upsert list of dicts into PostgreSQL with ON CONFLICT DO UPDATE.
-        Overwrites any existing records that share the same primary key.
+        Import validated records using PostgreSQL upsert functions.
+        Commit the entire upload on success; roll back on failure.
         """
-        if not records:
-            return 0
-
-        conn = cls.get_pg_connection()
-        cur = conn.cursor()
-
         queries = {
             "Category": """
-                INSERT INTO Category (category_id, category_name)
-                VALUES (%(cat_id)s, %(cat_name)s)
-                ON CONFLICT (category_id) DO UPDATE SET category_name = EXCLUDED.category_name;
+                SELECT public.upsert_category(%(cat_id)s::integer,%(cat_name)s::text);
             """,
             "Channel": """
-                INSERT INTO Channel (channel_id, channel_title)
-                VALUES (%(chan_id)s, %(chan_title)s)
-                ON CONFLICT (channel_id) DO UPDATE SET channel_title = EXCLUDED.channel_title;
+                SELECT public.upsert_channel(%(chan_id)s::integer,%(chan_title)s::text);
             """,
             "Country": """
-                INSERT INTO Country (country_code, country_name, population)
-                VALUES (%(code)s, %(name)s, %(pop)s)
-                ON CONFLICT (country_code) DO UPDATE 
-                SET country_name = EXCLUDED.country_name, population = EXCLUDED.population;
+                SELECT public.upsert_country(%(code)s::text,%(name)s::text,%(pop)s::bigint);
             """,
             "Video": """
-                INSERT INTO Video (video_id, title, publish_time, tag_count, channel_id, category_id)
-                VALUES (%(video_id)s, %(title)s, %(pub_dt)s, %(tag_count)s, %(channel_id)s, %(category_id)s)
-                ON CONFLICT (video_id) DO UPDATE SET
-                    title = EXCLUDED.title,
-                    publish_time = EXCLUDED.publish_time,
-                    tag_count = EXCLUDED.tag_count,
-                    channel_id = EXCLUDED.channel_id,
-                    category_id = EXCLUDED.category_id;
+                SELECT public.upsert_video(%(video_id)s::text,%(title)s::text,%(pub_dt)s::timestamptz,
+                %(tag_count)s::integer,%(channel_id)s::integer,%(category_id)s::integer);
             """,
             "Channel Stats": """
-                INSERT INTO Channel_Stats (channel_id, country_code, rank, subscribers, views, total_uploads, stats_date, views_30, subs_30)
-                VALUES (%(chan_id)s, %(c_code)s, %(rank)s, %(sub)s, %(views)s, %(uploads)s, %(dt_val)s, %(v30)s, %(s30)s)
-                ON CONFLICT (channel_id) DO UPDATE SET
-                    country_code = EXCLUDED.country_code,
-                    rank = EXCLUDED.rank,
-                    subscribers = EXCLUDED.subscribers,
-                    views = EXCLUDED.views,
-                    total_uploads = EXCLUDED.total_uploads,
-                    stats_date = EXCLUDED.stats_date,
-                    views_30 = EXCLUDED.views_30,
-                    subs_30 = EXCLUDED.subs_30;
+                SELECT public.upsert_channel_stats(%(chan_id)s::integer,%(c_code)s::text,%(rank)s::integer,
+                %(sub)s::bigint,%(views)s::bigint,%(uploads)s::integer,%(dt_val)s::date,%(v30)s::bigint,
+                %(s30)s::bigint);
             """,
             "Trending Record": """
-                INSERT INTO Trending_Record (record_id, video_id, country_code, trending_date, views, likes, dislikes, comment_count)
-                VALUES (%(rec_id)s, %(vid_id)s, %(c_code)s, %(t_date)s, %(views)s, %(likes)s, %(dislikes)s, %(comments)s)
-                ON CONFLICT (record_id) DO UPDATE SET
-                    video_id = EXCLUDED.video_id,
-                    country_code = EXCLUDED.country_code,
-                    trending_date = EXCLUDED.trending_date,
-                    views = EXCLUDED.views,
-                    likes = EXCLUDED.likes,
-                    dislikes = EXCLUDED.dislikes,
-                    comment_count = EXCLUDED.comment_count;
+                SELECT public.upsert_trending_record(%(rec_id)s::integer,%(vid_id)s::text,
+                %(c_code)s::text,%(t_date)s::date,%(views)s::bigint,%(likes)s::bigint,
+                %(dislikes)s::bigint,%(comments)s::bigint);
             """
         }
 
         query = queries.get(table)
-        if not query:
-            raise ValueError(f"Bulk insert not supported for {table}")
 
+        if query is None:
+            raise ValueError(f"Bulk import not supported for {table}")
+
+        if not records:
+            return 0
+        conn = cls.get_pg_connection()
         try:
-            for rec in records:
-                cur.execute(query, rec)
+            processed = 0
+            with conn.cursor() as cur:
+                for rec in records:
+                    cur.execute(query, rec)
+                    processed += 1
             conn.commit()
-            return len(records)
-        except Exception as e:
+            return processed
+        except Exception:
             conn.rollback()
-            raise e
+            raise
         finally:
-            cur.close()
             conn.close()
 
     @classmethod
@@ -435,32 +342,35 @@ class DataManager:
 
     @classmethod
     def delete_record(cls, table, identifier):
+        if identifier is None:
+            return False
+
         identifier = str(identifier).strip()
+
         if not identifier:
             return False
 
         try:
-            if table == "Category":
-                sql = "SELECT delete_category(%s);"
+            if table == "Channel":
+                sql = "SELECT public.delete_channel(%s);"
                 params = (int(identifier),)
-            elif table == "Channel":
-                sql = "SELECT delete_channel(%s);"
-                params = (int(identifier),)
-            elif table == "Country":
-                sql = "SELECT delete_country(%s::text);"
-                params = (identifier.upper(),)
+
             elif table == "Video":
-                sql = "SELECT delete_video(%s::text);"
+                sql = "SELECT public.delete_video(%s::text);"
                 params = (identifier,)
-            elif table == "Channel Stats":
-                sql = "SELECT delete_channel_stats(%s);"
-                params = (int(identifier),)
+
             elif table == "Trending Record":
-                sql = "SELECT delete_trending_record(%s);"
+                sql = "SELECT public.delete_trending_record(%s);"
                 params = (int(identifier),)
+
             else:
-                return False
+                raise ValueError(
+                    "Deletion is only supported for Channel, "
+                    "Video, and Trending Record."
+                )
+
         except ValueError:
+            # Invalid numeric identifier or unsupported table.
             return False
 
         return cls._execute_transaction(sql, params)
