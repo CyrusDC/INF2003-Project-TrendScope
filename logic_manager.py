@@ -2,7 +2,10 @@ import io
 import json
 import pandas as pd
 import datetime as dt
+import re
 from data_manager import DataManager
+from datetime import date
+
 
 class LogicManager:
     """Orchestrates business validation, security barriers, and coordinates with DataManager."""
@@ -295,6 +298,33 @@ class LogicManager:
 
         except Exception as e:
             return False, f"Bulk import error: {str(e)}"
+    @staticmethod
+    def read_record(table, identifier):
+        valid_tables = {"Category", "Channel", "Country", "Video", "Channel Stats", "Trending Record",}
+
+        if table not in valid_tables:
+            raise ValueError("Invalid table selected.")
+
+        identifier = str(identifier or "").strip()
+
+        if not identifier:
+            raise ValueError("Please enter a record ID.")
+
+        numeric_id_tables = {"Category", "Channel", "Channel Stats", "Trending Record",}
+
+        if table in numeric_id_tables:
+            try:
+                identifier = str(int(identifier))
+            except ValueError:
+                raise ValueError(
+                    "The record ID must be an integer."
+                ) from None
+
+        elif table == "Country":
+            identifier = identifier.upper()
+
+        return DataManager.read_record(table, identifier)
+
 
     @classmethod
     def execute_delete(cls, table, identifier):
@@ -323,3 +353,61 @@ class LogicManager:
         if df.empty:
             return True, f"No {entity_type.lower()} records matched '{clean_query}'.", df
         return True, None, df
+    @staticmethod
+    def get_filter_dropdown_options():
+        return DataManager.get_filter_dropdown_options()
+
+    @staticmethod
+    def explore_trending_videos(keyword=None, country=None, category_id=None, start_date=None, end_date=None):
+        def clean_optional(value):
+            if value is None:
+                return None
+            value = str(value).strip()
+            return value if value else None
+
+        keyword = clean_optional(keyword)
+        country = clean_optional(country)
+        category_id = clean_optional(category_id)
+
+        if country and country.lower() == "all":
+            country = None
+        if category_id and category_id.lower() == "all":
+            category_id = None
+        if country is not None:
+            country = country.upper()
+
+            if not re.fullmatch(r"[A-Z]{2}", country):
+                raise ValueError(
+                    "Country code must contain two letters."
+                )
+
+        if category_id is not None:
+            try:
+                category_id = int(category_id)
+            except ValueError:
+                raise ValueError(
+                    "Category ID must be an integer."
+                ) from None
+
+        def parse_date(value, label):
+            value = clean_optional(value)
+            if value is None:
+                return None
+            try:
+                return date.fromisoformat(value)
+            except ValueError:
+                raise ValueError(
+                    f"{label} must use YYYY-MM-DD format."
+                ) from None
+        start_date = parse_date(start_date, "Start date")
+        end_date = parse_date(end_date, "End date")
+        if (
+            start_date is not None
+            and end_date is not None
+            and start_date > end_date
+        ):
+            raise ValueError(
+                "Start date cannot be later than end date."
+            )
+        return DataManager.explore_trending_videos(keyword=keyword, country=country, category_id=category_id, start_date=start_date, end_date=end_date
+        )

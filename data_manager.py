@@ -304,6 +304,7 @@ class DataManager:
     # ------------------------------------------------------------------
     # READ & DELETE HELPERS
     # ------------------------------------------------------------------
+
     @classmethod
     def read_record(cls, table, identifier):
         identifier = str(identifier).strip()
@@ -512,88 +513,63 @@ class DataManager:
             return video_map, channel_map, category_map
         finally:
             conn.close()
-            
+
     @classmethod
     def search_records_by_name(cls, entity_type, term):
-        """
-        Viewer-facing search: Queries entities by human-readable names/titles
-        using case-insensitive partial matching (ILIKE).
-        """
-        term = f"%{str(term).strip()}%"
-        conn = cls.get_pg_connection()
-
         queries = {
             "Category": """
-                SELECT category_id, category_name 
-                FROM Category 
-                WHERE category_name ILIKE %s 
-                ORDER BY category_name LIMIT 50;
+                SELECT *
+                FROM public.search_categories_with_keyword(%s::text)
+                ORDER BY category_name, category_id;
             """,
             "Channel": """
-                SELECT channel_id, channel_title 
-                FROM Channel 
-                WHERE channel_title ILIKE %s 
-                ORDER BY channel_title LIMIT 50;
+                SELECT *
+                FROM public.search_channels_with_keyword(%s::text)
+                ORDER BY channel_title, channel_id;
             """,
             "Country": """
-                SELECT country_code, country_name, population 
-                FROM Country 
-                WHERE country_name ILIKE %s OR country_code ILIKE %s 
-                ORDER BY country_name LIMIT 50;
+                SELECT *
+                FROM public.search_countries_with_keyword(%s::text)
+                ORDER BY country_name, country_code;
             """,
             "Video": """
-                SELECT v.video_id, v.title, v.publish_time, v.tag_count,
-                       c.channel_title, cat.category_name
-                FROM Video v
-                LEFT JOIN Channel c ON v.channel_id = c.channel_id
-                LEFT JOIN Category cat ON v.category_id = cat.category_id
-                WHERE v.title ILIKE %s
-                ORDER BY v.publish_time DESC LIMIT 50;
+                SELECT *
+                FROM public.search_video_details(%s::text)
+                ORDER BY publish_time DESC, video_id;
             """
         }
-
-        # Mapping raw database columns to dashboard titles
         rename_mappings = {
             "Category": {
-                "category_id": "Category ID",
-                "category_name": "Category Name"
-            },
+                "category_id": "Category ID", "category_name": "Category Name"},
             "Channel": {
-                "channel_id": "Channel ID",
-                "channel_title": "Channel Title"
-            },
+                "channel_id": "Channel ID", "channel_title": "Channel Title"},
             "Country": {
-                "country_code": "Country Code",
-                "country_name": "Country Name",
-                "population": "Population"
-            },
+                "country_code": "Country Code", "country_name": "Country Name", "population": "Population"},
             "Video": {
-                "video_id": "Video ID",
-                "title": "Video Title",
-                "publish_time": "Publish Time",
-                "tag_count": "Tag Count",
-                "channel_title": "Channel Name",
-                "category_name": "Category"
-            }
+                "video_id": "Video ID", "title": "Video Title", "publish_time": "Publish Time",
+                "tag_count": "Tag Count", "channel_title": "Channel Name", "category_name": "Category"}
         }
 
         sql = queries.get(entity_type)
-        if not sql:
-            conn.close()
-            return pd.DataFrame()
 
+        if sql is None:
+            raise ValueError("Unsupported search type.")
+
+        keyword = term.strip()
+        conn = cls.get_pg_connection()
         try:
-            params = (term, term) if entity_type == "Country" else (term,)
-            df = pd.read_sql(sql, conn, params=params)
-
-            # Apply friendly header names
-            if not df.empty and entity_type in rename_mappings:
-                df = df.rename(columns=rename_mappings[entity_type])
-
-            return df
+            df = pd.read_sql(
+                sql,
+                conn,
+                params=(keyword,)
+            )
+            return df.rename(
+                columns=rename_mappings[entity_type]
+            )
         finally:
             conn.close()
-    
+
+
     @classmethod
     def get_copyright_claims_summary(cls, policy_filter=None, outcome_filter=None):
         """
@@ -642,71 +618,39 @@ class DataManager:
 
         results = list(col.aggregate(pipeline))
         return pd.DataFrame(results)
-    
+
     @classmethod
     def get_filter_dropdown_options(cls):
-        """Fetches distinct categories and countries to populate filter dropdowns."""
+        """Fetch dropdown options using PostgreSQL functions."""
         conn = cls.get_pg_connection()
         try:
-            cats = pd.read_sql("SELECT category_id, category_name FROM Category ORDER BY category_name;", conn)
-            countries = pd.read_sql("SELECT country_code, country_name FROM Country ORDER BY country_name;", conn)
-            return cats.to_dict(orient="records"), countries.to_dict(orient="records")
+            categories = pd.read_sql(
+                "SELECT * FROM public.get_category_options();",
+                conn
+            )
+            countries = pd.read_sql(
+                "SELECT * FROM public.get_country_options();",
+                conn
+            )
+            return (
+                categories.to_dict(orient="records"),
+                countries.to_dict(orient="records")
+            )
         finally:
             conn.close()
 
     @classmethod
     def explore_trending_videos(cls, keyword=None, country=None, category_id=None, start_date=None, end_date=None):
-        """
-        Multi-table join (Video, Category, Channel, Trending_Record) with indexed range queries.
-        Satisfies Proposal 4.1: Trending Explorer.
-        """
-        conditions = ["1=1"]
-        params = []
-
-        if keyword:
-            conditions.append("v.title ILIKE %s")
-            params.append(f"%{keyword.strip()}%")
-
-        if country and country != "all":
-            conditions.append("tr.country_code = %s")
-            params.append(country.strip().upper())
-
-        if category_id and category_id != "all":
-            conditions.append("v.category_id = %s")
-            params.append(int(category_id))
-
-        if start_date:
-            conditions.append("tr.trending_date >= %s")
-            params.append(start_date)
-
-        if end_date:
-            conditions.append("tr.trending_date <= %s")
-            params.append(end_date)
-
-        where_clause = " AND ".join(conditions)
-
-        sql = f"""
-            SELECT 
-                v.video_id,
-                v.title,
-                c.channel_title,
-                cat.category_name,
-                tr.country_code,
-                tr.trending_date,
-                tr.views,
-                tr.likes,
-                tr.dislikes
-            FROM Trending_Record tr
-            JOIN Video v ON tr.video_id = v.video_id
-            JOIN Channel c ON v.channel_id = c.channel_id
-            JOIN Category cat ON v.category_id = cat.category_id
-            WHERE {where_clause}
-            ORDER BY tr.views DESC
-            LIMIT 100;
+        sql = """
+            SELECT *
+            FROM public.explore_trending_videos
+                (%s::text, %s::text, %s::integer, %s::date, %s::date)
+                ORDER BY trending_date ASC;
         """
 
+        params = (keyword, country, category_id, start_date, end_date)
         conn = cls.get_pg_connection()
         try:
-            return pd.read_sql(sql, conn, params=tuple(params))
+            return pd.read_sql(sql, conn, params=params)
         finally:
             conn.close()

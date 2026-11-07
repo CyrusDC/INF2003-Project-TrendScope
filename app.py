@@ -89,9 +89,20 @@ def crud():
         if action == "viewer_search":
             entity_type = request.form.get("entity_type")
             query_str = request.form.get("search_query")
-            success, msg, df = LogicManager.search_by_name(entity_type, query_str)
+
+            try:
+                success, msg, df = LogicManager.search_by_name(
+                    entity_type, query_str
+                )
+            except Exception:
+                app.logger.exception("Record search failed")
+                success = False
+                msg = "Unable to complete the search. Please try again."
+                df = None
+
             if msg:
                 flash(msg, "info" if success else "warning")
+
             if df is not None and not df.empty:
                 search_results = df.to_html(
                     classes="table table-striped table-hover align-middle mt-3",
@@ -99,12 +110,28 @@ def crud():
                     justify="left"
                 )
 
-        # Admin-facing raw PK lookup (Classic CRUD Read)
+        # Admin-facing lookup by primary key
         elif action == "read" and role == "admin":
             table = request.form.get("table")
             identifier = request.form.get("identifier")
-            df = DataManager.read_record(table, identifier)
-            search_results = df.to_html(classes="table table-bordered mt-3", index=False) if not df.empty else "No matching record found."
+
+            try:
+                df = LogicManager.read_record(table, identifier)
+
+                search_results = (
+                    df.to_html(classes="table table-bordered mt-3", index=False)
+                    if not df.empty
+                    else "No matching record found."
+                )
+            except ValueError as e:
+                flash(str(e), "warning")
+
+            except Exception:
+                app.logger.exception("Record lookup failed")
+                flash(
+                    "Unable to retrieve the record. Please try again.",
+                    "danger"
+                )
 
         # Admin-only mutations
         elif action in ["insert", "delete", "bulk_insert"]:
@@ -120,16 +147,25 @@ def crud():
             elif action == "bulk_insert":
                 table = request.form.get("table")
                 file = request.files.get("dataset_file")
+
                 if not file or file.filename == "":
-                    flash("Please select a valid dataset file (.csv or .json) to upload.", "warning")
+                    flash(
+                        "Please select a valid dataset file "
+                        "(.csv or .json) to upload.",
+                        "warning"
+                    )
                 else:
-                    success, msg = LogicManager.execute_bulk_insert(table, file)
+                    success, msg = LogicManager.execute_bulk_insert(
+                        table, file
+                    )
                     flash(msg, "success" if success else "danger")
 
             elif action == "delete":
                 table = request.form.get("table")
                 identifier = request.form.get("identifier")
-                success, msg = LogicManager.execute_delete(table, identifier)
+                success, msg = LogicManager.execute_delete(
+                    table, identifier
+                )
                 flash(msg, "success" if success else "danger")
 
     return render_template("crud.html", search_results=search_results)
@@ -152,11 +188,11 @@ def search_videos():
     countries = []
 
     try:
-        categories, countries = DataManager.get_filter_dropdown_options()
+        categories, countries = LogicManager.get_filter_dropdown_options()
         
         # Run search if any filter parameter is specified
         if keyword or country != "all" or category != "all" or start_date or end_date:
-            df = DataManager.explore_trending_videos(
+            df = LogicManager.explore_trending_videos(
                 keyword=keyword,
                 country=country,
                 category_id=category,
