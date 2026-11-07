@@ -59,14 +59,11 @@ class LogicManager:
         try:
             code = str(data.get("country_code", "")).strip().upper()
             name = str(data.get("country_name", "")).strip()
-            pop = int(data.get("population", 0))
             if len(code) != 2:
                 return False, "Country Code must be exactly 2 characters (e.g. US, SG)."
             if not name:
                 return False, "Country Name cannot be empty."
-            if pop < 0:
-                return False, "Population cannot be negative."
-            return True, {"code": code, "name": name, "pop": pop}
+            return True, {"code": code, "name": name}
         except Exception:
             return False, "Invalid data types for Country."
 
@@ -202,7 +199,7 @@ class LogicManager:
             elif table == "Country":
                 valid, res = cls.validate_country(payload)
                 if not valid: return False, res
-                DataManager.insert_country(res["code"], res["name"], res["pop"])
+                DataManager.insert_country(res["code"], res["name"])
                 return True, f"Country '{res['name']}' saved/overwritten successfully."
 
             elif table == "Video":

@@ -151,10 +151,10 @@ class DataManager:
 
 
     @classmethod
-    def insert_country(cls, code, name, pop):
+    def insert_country(cls, code, name):
         return cls._execute_insert(
             "SELECT public.upsert_country(%s::text, %s::text, %s);",
-            (code.upper(), name, pop)
+            (code.upper(), name)
         )
 
 
@@ -214,7 +214,7 @@ class DataManager:
                 SELECT public.upsert_channel(%(chan_id)s::integer,%(chan_title)s::text);
             """,
             "Country": """
-                SELECT public.upsert_country(%(code)s::text,%(name)s::text,%(pop)s::bigint);
+                SELECT public.upsert_country(%(code)s::text,%(name)s::text);
             """,
             "Video": """
                 SELECT public.upsert_video(%(video_id)s::text,%(title)s::text,%(pub_dt)s::timestamptz,
@@ -544,7 +544,7 @@ class DataManager:
             "Channel": {
                 "channel_id": "Channel ID", "channel_title": "Channel Title"},
             "Country": {
-                "country_code": "Country Code", "country_name": "Country Name", "population": "Population"},
+                "country_code": "Country Code", "country_name": "Country Name"},
             "Video": {
                 "video_id": "Video ID", "title": "Video Title", "publish_time": "Publish Time",
                 "tag_count": "Tag Count", "channel_title": "Channel Name", "category_name": "Category"}
