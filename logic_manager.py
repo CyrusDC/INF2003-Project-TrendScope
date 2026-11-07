@@ -256,8 +256,12 @@ class LogicManager:
         filename = file_obj.filename.lower()
         try:
             if filename.endswith(".csv"):
-                df = pd.read_csv(file_obj)
-                records = df.where(pd.notnull(df), None).to_dict(orient="records")
+                if table == "Revenue Record":
+                    df = pd.read_csv(file_obj)
+                    records = df.where(pd.notnull(df), None).to_dict(orient="records")
+                else:
+                    df = pd.read_csv(file_obj, dtype=str, keep_default_na=False, encoding="utf-8-sig")
+                    records = df.to_dict(orient="records")
             elif filename.endswith(".json"):
                 data = json.load(file_obj)
                 records = data if isinstance(data, list) else [data]
