@@ -26,7 +26,9 @@
                 {% if session.get('user') %}
                     <span class="nav-item nav-link text-white-50">Role: <strong>{{ session.get('role') | upper }}</strong></span>
                     <a class="nav-link" href="{{ url_for('dashboard') }}">Analytics</a>
-                    <a class="nav-link" href="{{ url_for('crud') }}">CRUD Operations</a>
+                    {% if session.get('role') == 'admin' %}
+                        <a class="nav-link" href="{{ url_for('crud') }}">CRUD Operations</a>
+                    {% endif %}
                     <a class="nav-link" href="{{ url_for('benchmark') }}">Performance Benchmark</a>
                     <a class="nav-link btn btn-outline-danger btn-sm text-white ms-2" href="{{ url_for('logout') }}">Sign Out</a>
                 {% else %}

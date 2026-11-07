@@ -340,20 +340,6 @@ class LogicManager:
         except Exception as e:
             return False, f"Integrity error: {str(e)}"
         
-    @classmethod
-    def search_by_name(cls, entity_type, query_str):
-        clean_query = str(query_str or "").strip()
-        if len(clean_query) < 1:
-            return False, "Please enter at least 1 character to search.", None
-        
-        valid_entities = ["Category", "Channel", "Country", "Video"]
-        if entity_type not in valid_entities:
-            return False, "Invalid entity selected.", None
-
-        df = DataManager.search_records_by_name(entity_type, clean_query)
-        if df.empty:
-            return True, f"No {entity_type.lower()} records matched '{clean_query}'.", df
-        return True, None, df
     @staticmethod
     def get_filter_dropdown_options():
         return DataManager.get_filter_dropdown_options()

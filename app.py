@@ -78,6 +78,7 @@ def dashboard():
 
 @app.route("/crud", methods=["GET", "POST"])
 @login_required
+@admin_required
 def crud():
     search_results = None
     role = session.get("role")
@@ -85,33 +86,8 @@ def crud():
     if request.method == "POST":
         action = request.form.get("action")
 
-        # Viewer-facing search by Name / Title
-        if action == "viewer_search":
-            entity_type = request.form.get("entity_type")
-            query_str = request.form.get("search_query")
-
-            try:
-                success, msg, df = LogicManager.search_by_name(
-                    entity_type, query_str
-                )
-            except Exception:
-                app.logger.exception("Record search failed")
-                success = False
-                msg = "Unable to complete the search. Please try again."
-                df = None
-
-            if msg:
-                flash(msg, "info" if success else "warning")
-
-            if df is not None and not df.empty:
-                search_results = df.to_html(
-                    classes="table table-striped table-hover align-middle mt-3",
-                    index=False,
-                    justify="left"
-                )
-
         # Admin-facing lookup by primary key
-        elif action == "read" and role == "admin":
+        if action == "read" and role == "admin":
             table = request.form.get("table")
             identifier = request.form.get("identifier")
 

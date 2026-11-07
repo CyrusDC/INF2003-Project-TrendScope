@@ -101,21 +101,6 @@ class DataManager:
         finally:
             conn.close()
 
-    @classmethod
-    def search_videos_with_keyword(cls, keyword):
-
-        sql = """
-            SELECT *
-            FROM search_videos_with_keyword(%s::text);
-        """
-
-        conn = cls.get_pg_connection()
-
-        try:
-            return pd.read_sql(sql,conn,params=(keyword,))
-
-        finally:
-            conn.close()
 
     # ------------------------------------------------------------------
     # INDIVIDUAL RELATIONAL CRUD (UPSERT BEHAVIOR)
@@ -515,62 +500,6 @@ class DataManager:
             conn.close()
 
     @classmethod
-    def search_records_by_name(cls, entity_type, term):
-        queries = {
-            "Category": """
-                SELECT *
-                FROM public.search_categories_with_keyword(%s::text)
-                ORDER BY category_name, category_id;
-            """,
-            "Channel": """
-                SELECT *
-                FROM public.search_channels_with_keyword(%s::text)
-                ORDER BY channel_title, channel_id;
-            """,
-            "Country": """
-                SELECT *
-                FROM public.search_countries_with_keyword(%s::text)
-                ORDER BY country_name, country_code;
-            """,
-            "Video": """
-                SELECT *
-                FROM public.search_video_details(%s::text)
-                ORDER BY publish_time DESC, video_id;
-            """
-        }
-        rename_mappings = {
-            "Category": {
-                "category_id": "Category ID", "category_name": "Category Name"},
-            "Channel": {
-                "channel_id": "Channel ID", "channel_title": "Channel Title"},
-            "Country": {
-                "country_code": "Country Code", "country_name": "Country Name"},
-            "Video": {
-                "video_id": "Video ID", "title": "Video Title", "publish_time": "Publish Time",
-                "tag_count": "Tag Count", "channel_title": "Channel Name", "category_name": "Category"}
-        }
-
-        sql = queries.get(entity_type)
-
-        if sql is None:
-            raise ValueError("Unsupported search type.")
-
-        keyword = term.strip()
-        conn = cls.get_pg_connection()
-        try:
-            df = pd.read_sql(
-                sql,
-                conn,
-                params=(keyword,)
-            )
-            return df.rename(
-                columns=rename_mappings[entity_type]
-            )
-        finally:
-            conn.close()
-
-
-    @classmethod
     def get_copyright_claims_summary(cls, policy_filter=None, outcome_filter=None):
         """
         Unwinds the nested copyright_claims array, filters by policy/outcome,
@@ -645,7 +574,6 @@ class DataManager:
             SELECT *
             FROM public.explore_trending_videos
                 (%s::text, %s::text, %s::integer, %s::date, %s::date)
-                ORDER BY trending_date ASC;
         """
 
         params = (keyword, country, category_id, start_date, end_date)
