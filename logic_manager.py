@@ -110,13 +110,13 @@ class LogicManager:
         try:
             chan_id = int(data.get("channel_id", 0))
             c_code = str(data.get("country_code", "")).strip().upper()
-            rank = int(data.get("rank", 0))
-            sub = int(data.get("subscribers", 0))
-            views = int(data.get("views", 0))
-            uploads = int(data.get("total_uploads", 0))
-            s_date = data.get("stats_date")
-            v30 = int(data.get("views_30", 0))
-            s30 = int(data.get("subs_30", 0))
+            rank = int(data.get("global_rank", 0))
+            sub = int(data.get("subscriber", 0))
+            views = int(data.get("video_views", 0))
+            uploads = int(data.get("uploads", 0))
+            s_date = data.get("created_date")
+            v30 = int(data.get("video_views_last_30_days", 0))
+            s30 = int(data.get("subscribers_last_30_days", 0))
 
             if chan_id < 1 or rank < 1 or len(c_code) != 2 or not s_date:
                 return False, "Invalid identifiers, country code, or missing date."
