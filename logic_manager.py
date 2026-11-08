@@ -10,6 +10,10 @@ from datetime import date
 class LogicManager:
     """Orchestrates business validation, security barriers, and coordinates with DataManager."""
 
+    # Creator tiers from smallest to biggest. Edit to match the values in your data.
+    # Any tier not listed here is shown but left out of the "does bigger earn more?" check.
+    TIER_ORDER = ["small", "medium", "large", "mega"]
+
     @staticmethod
     def authenticate(username, password):
         users = {
@@ -169,14 +173,33 @@ class LogicManager:
         try:
             vid_id = str(data.get("video_id", "")).strip()
             if len(vid_id) != 11:
-                return False, "Video ID must be 11 chars."
+                return False, "Video ID must be exactly 11 characters."
+
+            # Whitelist creator tiers (matching TIER_ORDER)
+            tier = str(data.get("creator_tier", "")).strip().lower()
+            valid_tiers = {"small", "medium", "large", "mega"}
+            if tier and tier not in valid_tiers:
+                return False, f"Creator tier must be one of: {', '.join(sorted(valid_tiers))}."
+
+            # Verify non-negative values in nested country revenue if provided
+            country_revenue = data.get("revenue_by_country", [])
+            if isinstance(country_revenue, list):
+                for entry in country_revenue:
+                    usd = float(entry.get("estimated_gross_usd", 0.0))
+                    if usd < 0:
+                        return False, "Estimated gross USD cannot be negative."
+
             # Clean dict copy for MongoDB
             clean_doc = dict(data)
             clean_doc["video_id"] = vid_id
+            if tier:
+                clean_doc["creator_tier"] = tier
             clean_doc.pop("_id", None)
             return True, clean_doc
-        except Exception:
-            return False, "Invalid inputs for Revenue Record."
+        except (ValueError, TypeError) as e:
+            return False, f"Invalid numerical inputs for Revenue Record: {str(e)}"
+        except Exception as e:
+            return False, f"Validation error: {str(e)}"
 
     # ------------------------------------------------------------------
     # SINGLE INSERT EXECUTION (UPSERT)
@@ -299,6 +322,7 @@ class LogicManager:
 
         except Exception as e:
             return False, f"Bulk import error: {str(e)}"
+
     @staticmethod
     def read_record(table, identifier):
         valid_tables = {"Category", "Channel", "Country", "Video", "Channel Stats", "Trending Record",}
@@ -333,6 +357,8 @@ class LogicManager:
             return False, "Primary key identifier must be provided."
         try:
             if table == "Revenue Record":
+                if len(identifier) != 11:
+                    return False, "Video ID must be exactly 11 characters."
                 success = DataManager.delete_mongo_revenue(identifier)
             else:
                 success = DataManager.delete_record(table, identifier)
@@ -398,3 +424,131 @@ class LogicManager:
             )
         return DataManager.explore_trending_videos(keyword=keyword, country=country, category_id=category_id, start_date=start_date, end_date=end_date
         )
+
+
+    # ------------------------------------------------------------------
+    # MONGODB VALIDATION
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def get_video_stats_by_id(video_id):
+        clean_id = str(video_id or "").strip()
+        if len(clean_id) != 11:
+            return {}
+        return DataManager.get_video_stats_by_id(clean_id)
+    
+    @staticmethod
+    def filter_by_creator_tier(tier="large", limit=None):
+        clean_tier = str(tier or "").strip().lower()
+        valid_tiers = {"small", "medium", "large", "mega"}
+        if clean_tier not in valid_tiers:
+            clean_tier = "large"
+        return DataManager.filter_by_creator_tier(clean_tier, limit)
+
+    @staticmethod
+    def aggregate_revenue_by_country():
+        return DataManager.aggregate_revenue_by_country()
+
+    @staticmethod
+    def aggregate_category_breakdown():
+        return DataManager.aggregate_category_breakdown()
+
+    @staticmethod
+    def compare_creator_tiers():
+        return DataManager.compare_creator_tiers()
+
+    @staticmethod
+    def get_copyright_claims_summary(policy_filter=None, outcome_filter=None):
+        return DataManager.get_copyright_claims_summary(policy_filter, outcome_filter)
+
+    @staticmethod
+    def get_metadata_lookup_maps():
+        return DataManager.get_metadata_lookup_maps()
+
+    @staticmethod
+    def validate_video_id(video_id):
+        vid = str(video_id or "").strip()
+        if len(vid) != 11:
+            raise ValueError("Video ID must be exactly 11 characters.")
+        return vid
+
+    @staticmethod
+    def get_revenue_video_options(limit=500):
+        """Builds sorted video list with titles and tiers for the dropdown selectors."""
+        video_docs = DataManager.list_revenue_video_ids(limit)
+        video_map, _, _ = DataManager.get_metadata_lookup_maps()
+        options = [
+            {
+                "video_id": item["video_id"],
+                "creator_tier": item["creator_tier"],
+                "title": video_map.get(item["video_id"], "")
+            }
+            for item in video_docs
+        ]
+        return sorted(options, key=lambda o: (o["title"] or o["video_id"]).lower())
+
+    @staticmethod
+    def get_revenue_channel_options(limit=500):
+        """Builds sorted channel list with titles for channel dropdown selectors."""
+        ids = DataManager.list_revenue_channel_ids(limit)
+        _, channel_map, _ = DataManager.get_metadata_lookup_maps()
+        options = [{"channel_id": c, "title": channel_map.get(c, "")} for c in ids]
+        return sorted(options, key=lambda o: (o["title"] or str(o["channel_id"])).lower())
+
+    @classmethod
+    def compare_two_videos(cls, video_a_id, video_b_id):
+        """
+        Validates and compares two distinct videos across tiers and total earnings.
+        """
+        vid_a = cls.validate_video_id(video_a_id)
+        vid_b = cls.validate_video_id(video_b_id)
+
+        if vid_a == vid_b:
+            raise ValueError("Please select two different videos to compare.")
+
+        doc_a = DataManager.get_video_comparison_item(vid_a)
+        doc_b = DataManager.get_video_comparison_item(vid_b)
+
+        if not doc_a:
+            raise ValueError(f"No revenue record found for Video A ({vid_a}).")
+        if not doc_b:
+            raise ValueError(f"No revenue record found for Video B ({vid_b}).")
+
+        # Enrich with titles from PostgreSQL
+        video_map, channel_map, category_map = DataManager.get_metadata_lookup_maps()
+        for doc in (doc_a, doc_b):
+            vid = doc["video_id"]
+            doc["video_title"] = video_map.get(vid, f"Video {vid}")
+            doc["channel_name"] = channel_map.get(doc.get("channel_id"), f"Channel {doc.get('channel_id')}")
+            doc["category_name"] = category_map.get(doc.get("category_id"), f"Category {doc.get('category_id')}")
+
+        # Compute differences
+        diff_rev = doc_a["total_revenue"] - doc_b["total_revenue"]
+        higher_earner = "A" if diff_rev > 0 else ("B" if diff_rev < 0 else "Tie")
+
+        # Evaluate Tier impact
+        tier_rank = {t: i for i, t in enumerate(cls.TIER_ORDER)}
+        rank_a = tier_rank.get(doc_a["creator_tier"], -1)
+        rank_b = tier_rank.get(doc_b["creator_tier"], -1)
+
+        tier_comparison = None
+        if rank_a > rank_b:
+            if higher_earner == "A":
+                tier_verdict = f"Expected Outcome: Video A is in a higher tier ({doc_a['creator_tier'].capitalize()} vs {doc_b['creator_tier'].capitalize()}) and earned ${abs(diff_rev):,.2f} more."
+            else:
+                tier_verdict = f"Anomaly: Despite Video A being a higher tier ({doc_a['creator_tier'].capitalize()} vs {doc_b['creator_tier'].capitalize()}), Video B earned ${abs(diff_rev):,.2f} more."
+        elif rank_b > rank_a:
+            if higher_earner == "B":
+                tier_verdict = f"Expected Outcome: Video B is in a higher tier ({doc_b['creator_tier'].capitalize()} vs {doc_a['creator_tier'].capitalize()}) and earned ${abs(diff_rev):,.2f} more."
+            else:
+                tier_verdict = f"Anomaly: Despite Video B being a higher tier ({doc_b['creator_tier'].capitalize()} vs {doc_a['creator_tier'].capitalize()}), Video A earned ${abs(diff_rev):,.2f} more."
+        else:
+            tier_verdict = f"Both videos belong to the same tier ({doc_a['creator_tier'].capitalize()}). Revenue difference is ${abs(diff_rev):,.2f}."
+
+        return {
+            "video_a": doc_a,
+            "video_b": doc_b,
+            "revenue_difference": abs(diff_rev),
+            "higher_earner": higher_earner,
+            "tier_verdict": tier_verdict
+        }

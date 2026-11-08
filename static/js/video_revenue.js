@@ -231,3 +231,29 @@ function loadVideoStats(videoId) {
             document.getElementById('modalLoading').innerHTML = `<div class="alert alert-danger m-3">${err.message}</div>`;
         });
 }
+
+function filterOptions(filterElemId, targetSelectId) {
+    const filterElem = document.getElementById(filterElemId);
+    const targetSelect = document.getElementById(targetSelectId);
+
+    if (!filterElem || !targetSelect) return;
+
+    const selectedTier = filterElem.value.toLowerCase().trim();
+    const options = targetSelect.querySelectorAll('option');
+
+    options.forEach((opt, index) => {
+        // Keep the placeholder '-- Choose Video --'
+        if (index === 0) return;
+
+        const optTier = (opt.getAttribute('data-tier') || '').toLowerCase().trim();
+
+        if (selectedTier === 'all' || optTier === selectedTier) {
+            opt.style.display = '';
+        } else {
+            opt.style.display = 'none';
+            if (opt.selected) {
+                targetSelect.value = ''; // Reset selection if current selection gets hidden
+            }
+        }
+    });
+}

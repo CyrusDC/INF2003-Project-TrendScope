@@ -203,13 +203,42 @@ def video_revenue():
     results = []
     error = None
 
+    # 1. ALWAYS populate dropdown options for video pickers
+    video_options = []
+    channel_options = []
+    video_error = None
+    channel_error = None
+
+    try:
+        video_options = LogicManager.get_revenue_video_options()
+    except Exception as e:
+        app.logger.exception("Could not load video picker options")
+        video_error = f"Could not load the video list: {e}"
+
+    try:
+        channel_options = LogicManager.get_revenue_channel_options()
+    except Exception as e:
+        app.logger.exception("Could not load channel picker options")
+        channel_error = f"Could not load the channel list: {e}"
+
+    selected_video = request.args.get('video_id', '').strip()
+    selected_channel = request.args.get('channel_id', '').strip()
+    video_comparison = None
+    channel_comparison = None
+
+    # Head-to-Head Video Comparison variables
+    video_a = request.args.get('video_a', '').strip()
+    video_b = request.args.get('video_b', '').strip()
+    head_to_head = None
+    head_to_head_error = None
+
     try:
         if action == 'tier':
-            df = DataManager.filter_by_creator_tier(tier=selected_tier)
+            df = LogicManager.filter_by_creator_tier(tier=selected_tier)
             results = df.to_dict(orient="records")
 
             if results:
-                video_map, channel_map, category_map = DataManager.get_metadata_lookup_maps()
+                video_map, channel_map, category_map = LogicManager.get_metadata_lookup_maps()
                 for item in results:
                     v_id = item.get("video_id")
                     c_id = item.get("channel_id")
@@ -220,16 +249,15 @@ def video_revenue():
                     item["category_name"] = category_map.get(cat_id, f"Category {cat_id}")
 
         elif action == 'country':
-            df = DataManager.aggregate_revenue_by_country()
+            df = LogicManager.aggregate_revenue_by_country()
             results = df.to_dict(orient="records")
 
         elif action == 'categories':
-            df = DataManager.aggregate_category_breakdown()
+            df = LogicManager.aggregate_category_breakdown()
             results = df.to_dict(orient="records")
-            
             if results:
                 try:
-                    _, _, category_map = DataManager.get_metadata_lookup_maps()
+                    _, _, category_map = LogicManager.get_metadata_lookup_maps()
                     for item in results:
                         cat_id = item.get("category_id") or item.get("_id")
                         item["category_name"] = category_map.get(int(cat_id) if cat_id is not None else None, f"Category {cat_id}")
@@ -237,13 +265,23 @@ def video_revenue():
                     print(f"Error enriching categories: {ex}")
 
         elif action == 'compare':
-            df = DataManager.compare_creator_tiers()
+            df = LogicManager.compare_creator_tiers()
             results = df.to_dict(orient="records")
-        
+
+            # Execute Head-to-Head Comparison if both videos are supplied
+            if video_a and video_b:
+                try:
+                    head_to_head = LogicManager.compare_two_videos(video_a, video_b)
+                except ValueError as e:
+                    head_to_head_error = str(e)
+                except Exception as e:
+                    app.logger.exception("Head-to-head comparison failed")
+                    head_to_head_error = f"Comparison failed: {e}"
+
         elif action == 'claims':
             policy = request.args.get('policy', 'all')
             outcome = request.args.get('outcome', 'all')
-            df = DataManager.get_copyright_claims_summary(policy_filter=policy, outcome_filter=outcome)
+            df = LogicManager.get_copyright_claims_summary(policy_filter=policy, outcome_filter=outcome)
             results = df.to_dict(orient="records")
 
     except Exception as e:
@@ -256,17 +294,29 @@ def video_revenue():
         results=results,
         selected_policy=request.args.get('policy', 'all'),
         selected_outcome=request.args.get('outcome', 'all'),
+        video_options=video_options,
+        selected_video=selected_video,
+        video_comparison=video_comparison,
+        video_error=video_error,
+        channel_options=channel_options,
+        selected_channel=selected_channel,
+        channel_comparison=channel_comparison,
+        channel_error=channel_error,
+        video_a=video_a,
+        video_b=video_b,
+        head_to_head=head_to_head,
+        head_to_head_error=head_to_head_error,
         error=error
     )
 
 @app.route('/api/video-stats/<video_id>', methods=['GET'])
 def get_video_stats(video_id):
-    stats = DataManager.get_video_stats_by_id(video_id)
+    stats = LogicManager.get_video_stats_by_id(video_id)
     if not stats:
         return {"error": "Video not found"}, 404
 
     try:
-        video_map, channel_map, category_map = DataManager.get_metadata_lookup_maps()
+        video_map, channel_map, category_map = LogicManager.get_metadata_lookup_maps()
         stats["video_title"] = video_map.get(stats.get("video_id"), "Unknown Title")
         stats["channel_name"] = channel_map.get(stats.get("channel_id"), "Unknown Channel")
         stats["category_name"] = category_map.get(stats.get("category_id"), "Unknown Category")

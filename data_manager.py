@@ -362,7 +362,7 @@ class DataManager:
         return cls._execute_transaction(sql, params)
 
     # ------------------------------------------------------------------
-    # ANALYTICS & LOOKUP
+    # MONGODB ANALYTICS & LOOKUP
     # ------------------------------------------------------------------
     @classmethod
     def aggregate_revenue_by_country(cls):
@@ -481,7 +481,7 @@ class DataManager:
         if not df.empty and "_id" in df.columns:
             df = df.rename(columns={"_id": "creator_tier"})
         return df
-
+    
     @classmethod
     def get_metadata_lookup_maps(cls):
         conn = cls.get_pg_connection()
@@ -499,6 +499,65 @@ class DataManager:
         finally:
             conn.close()
 
+    @classmethod
+    def get_video_comparison_item(cls, video_id):
+        """Fetches total revenue and core metrics for a single video document."""
+        col = cls.get_mongo_collection("revenue")
+        pipeline = [
+            {"$match": {"video_id": str(video_id).strip()}},
+            {"$project": {
+                "_id": 0,
+                "video_id": 1,
+                "channel_id": 1,
+                "category_id": 1,
+                "creator_tier": {"$toLower": "$creator_tier"},
+                "playback_rate": "$ads.monetized_playback_rate",
+                "ad_gross_usd": {
+                    "$reduce": {
+                        "input": {"$ifNull": ["$revenue_by_country", []]},
+                        "initialValue": 0.0,
+                        "in": {"$add": ["$$value", {"$ifNull": ["$$this.estimated_gross_usd", 0.0]}]}
+                    }
+                },
+                "sponsorship_usd": {"$ifNull": ["$revenue_summary.total_sponsorship_usd", 0.0]},
+                "total_revenue": {
+                    "$add": [
+                        {
+                            "$reduce": {
+                                "input": {"$ifNull": ["$revenue_by_country", []]},
+                                "initialValue": 0.0,
+                                "in": {"$add": ["$$value", {"$ifNull": ["$$this.estimated_gross_usd", 0.0]}]}
+                            }
+                        },
+                        {"$ifNull": ["$revenue_summary.total_sponsorship_usd", 0.0]}
+                    ]
+                }
+            }}
+        ]
+        docs = list(col.aggregate(pipeline))
+        return docs[0] if docs else None
+
+    @classmethod
+    def list_revenue_video_ids(cls, limit=500):
+        """Fetches up to limit video IDs and tiers from the MongoDB revenue collection."""
+        col = cls.get_mongo_collection("revenue")
+        cursor = col.find({}, {"_id": 0, "video_id": 1, "creator_tier": 1}).limit(limit)
+        return [{"video_id": d["video_id"], "creator_tier": (d.get("creator_tier") or "").lower()} for d in cursor if "video_id" in d]
+
+    @classmethod
+    def list_revenue_channel_ids(cls, limit=500):
+        """Fetches distinct channel IDs from the MongoDB revenue collection."""
+        col = cls.get_mongo_collection("revenue")
+        pipeline = [
+            {"$group": {"_id": "$channel_id"}},
+            {"$match": {"_id": {"$ne": None}}},
+            {"$limit": limit}
+        ]
+        return [d["_id"] for d in col.aggregate(pipeline)]
+
+    #------------------------------------------------------------------
+    # Copyright Claims Summary
+    #------------------------------------------------------------------
     @classmethod
     def get_copyright_claims_summary(cls, policy_filter=None, outcome_filter=None):
         """

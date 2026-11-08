@@ -252,6 +252,135 @@
                 <div class="alert alert-warning">No comparative tier data found in collection.</div>
             {% endif %}
 
+        <!-- Head-to-Head Video Tier Comparison Form -->
+            <hr class="my-4">
+            <h5 class="mb-1">Head-to-Head Video Comparison (Across Tiers)</h5>
+            <p class="text-muted">
+                Filter and select two videos across different tiers (e.g. Mega vs Small) to directly compare their earnings.
+            </p>
+
+            <form action="{{ url_for('video_revenue') }}" method="GET" class="p-3 mb-4 bg-light rounded border">
+                <input type="hidden" name="action" value="compare">
+
+                <div class="row g-3">
+                    <!-- VIDEO A SELECTION -->
+                    <div class="col-md-6 border-end pe-md-3">
+                        <label class="form-label small fw-bold text-primary">Video A Filter & Selection</label>
+                        <div class="input-group mb-2">
+                            <span class="input-group-text small">Filter Tier</span>
+                            <select id="tier_filter_a" class="form-select form-select-sm" onchange="filterOptions('tier_filter_a', 'video_a_select')">
+                                <option value="all">All Tiers</option>
+                                <option value="mega">Mega</option>
+                                <option value="large">Large</option>
+                                <option value="medium">Medium</option>
+                                <option value="small">Small</option>
+                            </select>
+                        </div>
+                        <select name="video_a" id="video_a_select" class="form-select" required>
+                            <option value="">-- Choose Video A --</option>
+                            {% for opt in video_options %}
+                                <option value="{{ opt.video_id }}" 
+                                        data-tier="{{ opt.creator_tier }}"
+                                        {% if opt.video_id == video_a %}selected{% endif %}>
+                                    [{{ opt.creator_tier|upper }}] {{ opt.title or opt.video_id }} ({{ opt.video_id }})
+                                </option>
+                            {% endfor %}
+                        </select>
+                    </div>
+
+                    <!-- VIDEO B SELECTION -->
+                    <div class="col-md-6 ps-md-3">
+                        <label class="form-label small fw-bold text-info">Video B Filter & Selection</label>
+                        <div class="input-group mb-2">
+                            <span class="input-group-text small">Filter Tier</span>
+                            <select id="tier_filter_b" class="form-select form-select-sm" onchange="filterOptions('tier_filter_b', 'video_b_select')">
+                                <option value="all">All Tiers</option>
+                                <option value="mega">Mega</option>
+                                <option value="large">Large</option>
+                                <option value="medium">Medium</option>
+                                <option value="small">Small</option>
+                            </select>
+                        </div>
+                        <select name="video_b" id="video_b_select" class="form-select" required>
+                            <option value="">-- Choose Video B --</option>
+                            {% for opt in video_options %}
+                                <option value="{{ opt.video_id }}" 
+                                        data-tier="{{ opt.creator_tier }}"
+                                        {% if opt.video_id == video_b %}selected{% endif %}>
+                                    [{{ opt.creator_tier|upper }}] {{ opt.title or opt.video_id }} ({{ opt.video_id }})
+                                </option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                </div>
+
+                <div class="row mt-3">
+                    <div class="col-12 text-end">
+                        <button type="submit" class="btn btn-primary px-4">Compare Videos</button>
+                    </div>
+                </div>
+            </form>
+
+            <!-- Error Banner -->
+            {% if head_to_head_error %}
+                <div class="alert alert-warning">{{ head_to_head_error }}</div>
+            {% endif %}
+
+            <!-- Comparison Results Table -->
+            {% if head_to_head %}
+                {% set va = head_to_head.video_a %}
+                {% set vb = head_to_head.video_b %}
+                
+                <div class="alert alert-info border-info">
+                    <strong>Verdict:</strong> {{ head_to_head.tier_verdict }}
+                </div>
+
+                <div class="table-responsive mb-4">
+                    <table class="table table-bordered table-hover align-middle text-center">
+                        <thead class="table-dark">
+                            <tr>
+                                <th>Metric</th>
+                                <th class="w-40 text-primary">Video A</th>
+                                <th class="w-40 text-info">Video B</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td class="fw-bold text-muted">Title</td>
+                                <td><strong>{{ va.video_title }}</strong><br><small class="text-muted">{{ va.video_id }}</small></td>
+                                <td><strong>{{ vb.video_title }}</strong><br><small class="text-muted">{{ vb.video_id }}</small></td>
+                            </tr>
+                            <tr>
+                                <td class="fw-bold text-muted">Creator Tier</td>
+                                <td><span class="badge bg-secondary fs-6">{{ va.creator_tier|capitalize }}</span></td>
+                                <td><span class="badge bg-secondary fs-6">{{ vb.creator_tier|capitalize }}</span></td>
+                            </tr>
+                            <tr>
+                                <td class="fw-bold text-muted">Platform Ad Gross</td>
+                                <td>${{ "{:,.2f}".format(va.ad_gross_usd|float) }}</td>
+                                <td>${{ "{:,.2f}".format(vb.ad_gross_usd|float) }}</td>
+                            </tr>
+                            <tr>
+                                <td class="fw-bold text-muted">Brand Sponsorship</td>
+                                <td>${{ "{:,.2f}".format(va.sponsorship_usd|float) }}</td>
+                                <td>${{ "{:,.2f}".format(vb.sponsorship_usd|float) }}</td>
+                            </tr>
+                            <tr class="table-light">
+                                <td class="fw-bold">Total Video Earnings</td>
+                                <td class="fs-5 fw-bold {% if head_to_head.higher_earner == 'A' %}text-success{% else %}text-muted{% endif %}">
+                                    ${{ "{:,.2f}".format(va.total_revenue|float) }}
+                                    {% if head_to_head.higher_earner == 'A' %} ⭐ Higher{% endif %}
+                                </td>
+                                <td class="fs-5 fw-bold {% if head_to_head.higher_earner == 'B' %}text-success{% else %}text-muted{% endif %}">
+                                    ${{ "{:,.2f}".format(vb.total_revenue|float) }}
+                                    {% if head_to_head.higher_earner == 'B' %} ⭐ Higher{% endif %}
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            {% endif %}
+
         <!-- Case 5: Copyright Claims Explorer Results -->
         {% elif action_type == 'claims' %}
             <div class="d-flex justify-content-between align-items-center mb-3">
