@@ -1,25 +1,29 @@
 {% extends 'base.html' %}
 {% block content %}
 <div class="row">
-    <!-- READ SECTION -->
+
+    <!-- 2. ADMIN-FACING EXACT PK LOOKUP (SHOWN ONLY TO ADMIN) -->
+    {% if session.get('role') == 'admin' %}
     <div class="col-md-6 mb-4">
         <div class="card shadow-sm h-100">
-            <div class="card-header bg-secondary text-white">Read Record</div>
+            <div class="card-header bg-secondary text-white">Admin DB Maintenance: Read Record (PK)</div>
             <div class="card-body">
                 <form method="POST">
                     <input type="hidden" name="action" value="read">
                     <div class="mb-2">
                         <label class="form-label">Table</label>
                         <select name="table" class="form-select">
-                            <option value="Category">Category</option>
-                            <option value="Video">Video</option>
-                            <option value="Country">Country</option>
-                            <option value="Channel">Channel</option>
+                            <option value="Category">Category (by ID)</option>
+                            <option value="Channel">Channel (by ID)</option>
+                            <option value="Country">Country (by 2-char code)</option>
+                            <option value="Video">Video (by 11-char ID)</option>
+                            <option value="Channel Stats">Channel Stats (by ID)</option>
+                            <option value="Trending Record">Trending Record (by ID)</option>
                         </select>
                     </div>
                     <div class="mb-3">
-                        <label class="form-label">Primary Key (ID or Code)</label>
-                        <input type="text" name="identifier" class="form-control" required>
+                        <label class="form-label">Primary Key</label>
+                        <input type="text" name="identifier" class="form-control" placeholder="Enter PK..." required>
                     </div>
                     <button type="submit" class="btn btn-secondary w-100">Query Database</button>
                 </form>
@@ -30,44 +34,77 @@
         </div>
     </div>
 
-    <!-- DELETE SECTION -->
+    <!-- 3. ADMIN-FACING DELETE RECORD -->
     <div class="col-md-6 mb-4">
         <div class="card shadow-sm border-danger h-100">
-            <div class="card-header bg-danger text-white">Delete Record (Admin Only)</div>
+            <div class="card-header bg-danger text-white">Admin DB Maintenance: Delete Record</div>
             <div class="card-body">
                 <form method="POST">
                     <input type="hidden" name="action" value="delete">
                     <div class="mb-2">
                         <label class="form-label">Table</label>
                         <select name="table" class="form-select">
-                            <option value="Category">Category</option>
+                            <option value="Channel">Channel</option>
                             <option value="Video">Video</option>
-                            <option value="Country">Country</option>
+                            <option value="Trending Record">Trending Record</option>
                             <option value="Revenue Record">Revenue Record (MongoDB)</option>
                         </select>
                     </div>
                     <div class="mb-3">
                         <label class="form-label">Primary Key to Delete</label>
-                        <input type="text" name="identifier" class="form-control" required>
+                        <input type="text" name="identifier" class="form-control" placeholder="Enter PK..." required>
                     </div>
-                    <button type="submit" class="btn btn-danger w-100" {% if session.get('role') != 'admin' %}disabled{% endif %}>
-                        Permanently Delete
-                    </button>
+                    <button type="submit" class="btn btn-danger w-100">Permanently Delete</button>
                 </form>
             </div>
         </div>
     </div>
 
-    <!-- DYNAMIC INSERT SECTION -->
-    <div class="col-12 mt-4">
+    <!-- 4. ADMIN-FACING BULK INSERT -->
+    <div class="col-12 mb-4">
+        <div class="card shadow-sm border-primary">
+            <div class="card-header bg-primary text-white d-flex justify-content-between align-items-center">
+                <h5 class="mb-0">Bulk Dataset Insert / Overwrite (Admin Only)</h5>
+                <span class="badge bg-light text-dark">CSV & JSON Supported</span>
+            </div>
+            <div class="card-body">
+                <form method="POST" enctype="multipart/form-data">
+                    <input type="hidden" name="action" value="bulk_insert">
+                    <div class="row g-3 align-items-end">
+                        <div class="col-md-4">
+                            <label class="form-label fw-bold">Target Table</label>
+                            <select name="table" class="form-select" required>
+                                <option value="Category">Category (PostgreSQL)</option>
+                                <option value="Channel">Channel (PostgreSQL)</option>
+                                <option value="Country">Country (PostgreSQL)</option>
+                                <option value="Video">Video (PostgreSQL)</option>
+                                <option value="Channel Stats">Channel Stats (PostgreSQL)</option>
+                                <option value="Trending Record">Trending Record (PostgreSQL)</option>
+                                <option value="Revenue Record">Revenue Record (MongoDB)</option>
+                            </select>
+                        </div>
+                        <div class="col-md-5">
+                            <label class="form-label fw-bold">Select File (.csv or .json)</label>
+                            <input type="file" name="dataset_file" class="form-control" accept=".csv,.json" required>
+                        </div>
+                        <div class="col-md-3">
+                            <button type="submit" class="btn btn-primary w-100">Upload & Bulk Upsert</button>
+                        </div>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- 5. ADMIN-FACING SINGLE ROW INSERT -->
+    <div class="col-12 mb-4">
         <div class="card shadow-sm border-success">
             <div class="card-header bg-success text-white">
-                <h5 class="mb-0">Insert Record (Admin Only)</h5>
+                <h5 class="mb-0">Insert Single Record (Admin Only)</h5>
             </div>
             <div class="card-body">
                 <form method="POST">
                     <input type="hidden" name="action" value="insert">
-                    
                     <div class="mb-3">
                         <label class="form-label fw-bold">Select Target Table</label>
                         <select name="table" id="tableSelector" class="form-select" onchange="toggleFormFields()">
@@ -80,65 +117,60 @@
                             <option value="Revenue Record">Revenue Record (MongoDB)</option>
                         </select>
                     </div>
-
                     <hr>
 
-                    <!-- 1. CATEGORY FIELDS -->
+                    <!-- CATEGORY FIELDS -->
                     <div class="insert-group" id="fields-Category" style="display: none;">
                         <div class="row">
                             <div class="col-md-4 mb-2">
                                 <label class="form-label">Category ID</label>
-                                <input type="number" name="category_id" class="form-control" min="1" placeholder="e.g. 24">
+                                <input type="number" name="category_id" class="form-control" min="1">
                             </div>
                             <div class="col-md-8 mb-2">
                                 <label class="form-label">Category Name</label>
-                                <input type="text" name="category_name" class="form-control" placeholder="e.g. Entertainment">
+                                <input type="text" name="category_name" class="form-control">
                             </div>
                         </div>
                     </div>
 
-                    <!-- 2. CHANNEL FIELDS -->
+                    <!-- CHANNEL FIELDS -->
                     <div class="insert-group" id="fields-Channel" style="display: none;">
                         <div class="row">
                             <div class="col-md-4 mb-2">
                                 <label class="form-label">Channel ID</label>
-                                <input type="number" name="channel_id" class="form-control" min="1" placeholder="e.g. 501">
+                                <input type="number" name="channel_id" class="form-control" min="1">
                             </div>
                             <div class="col-md-8 mb-2">
                                 <label class="form-label">Channel Title / Name</label>
-                                <input type="text" name="channel_title" class="form-control" placeholder="e.g. PewDiePie">
+                                <input type="text" name="channel_title" class="form-control">
                             </div>
                         </div>
                     </div>
 
-                    <!-- 3. COUNTRY FIELDS -->
+                    <!-- COUNTRY FIELDS -->
                     <div class="insert-group" id="fields-Country" style="display: none;">
                         <div class="row">
                             <div class="col-md-3 mb-2">
                                 <label class="form-label">Country Code (2-char)</label>
-                                <input type="text" name="country_code" class="form-control" maxlength="2" placeholder="e.g. US">
+                                <input type="text" name="country_code" class="form-control" maxlength="2">
                             </div>
                             <div class="col-md-5 mb-2">
                                 <label class="form-label">Country Name</label>
-                                <input type="text" name="country_name" class="form-control" placeholder="e.g. United States">
-                            </div>
-                            <div class="col-md-4 mb-2">
-                                <label class="form-label">Population</label>
-                                <input type="number" name="population" class="form-control" min="0" placeholder="e.g. 331000000">
-                            </div>
+                                <input type="text" name="country_name" class="form-control">
+                            </div>           
                         </div>
                     </div>
 
-                    <!-- 4. VIDEO FIELDS -->
+                    <!-- VIDEO FIELDS -->
                     <div class="insert-group" id="fields-Video">
                         <div class="row">
                             <div class="col-md-4 mb-2">
                                 <label class="form-label">Video ID (11 chars)</label>
-                                <input type="text" name="video_id" class="form-control" maxlength="11" placeholder="e.g. dQw4w9WgXcQ">
+                                <input type="text" name="video_id" class="form-control" maxlength="11">
                             </div>
                             <div class="col-md-8 mb-2">
                                 <label class="form-label">Title</label>
-                                <input type="text" name="title" class="form-control" placeholder="Video Title">
+                                <input type="text" name="title" class="form-control">
                             </div>
                             <div class="col-md-3 mb-2">
                                 <label class="form-label">Channel ID</label>
@@ -163,7 +195,7 @@
                         </div>
                     </div>
 
-                    <!-- 5. CHANNEL STATS FIELDS -->
+                    <!-- CHANNEL STATS FIELDS -->
                     <div class="insert-group" id="fields-Channel-Stats" style="display: none;">
                         <div class="row">
                             <div class="col-md-3 mb-2">
@@ -172,7 +204,7 @@
                             </div>
                             <div class="col-md-3 mb-2">
                                 <label class="form-label">Country Code</label>
-                                <input type="text" name="country_code" class="form-control" maxlength="2" placeholder="e.g. US">
+                                <input type="text" name="country_code" class="form-control" maxlength="2">
                             </div>
                             <div class="col-md-3 mb-2">
                                 <label class="form-label">Rank</label>
@@ -205,7 +237,7 @@
                         </div>
                     </div>
 
-                    <!-- 6. TRENDING RECORD FIELDS -->
+                    <!-- TRENDING RECORD FIELDS -->
                     <div class="insert-group" id="fields-Trending-Record" style="display: none;">
                         <div class="row">
                             <div class="col-md-3 mb-2">
@@ -243,7 +275,7 @@
                         </div>
                     </div>
 
-                    <!-- 7. REVENUE RECORD (MONGODB) -->
+                    <!-- REVENUE RECORD (MONGODB) -->
                     <div class="insert-group" id="fields-Revenue-Record" style="display: none;">
                         <div class="row">
                             <div class="col-md-4 mb-2">
@@ -261,27 +293,29 @@
                         </div>
                     </div>
 
-                    <button type="submit" class="btn btn-success mt-3" {% if session.get('role') != 'admin' %}disabled{% endif %}>
-                        Submit Insert Record
-                    </button>
+                    <button type="submit" class="btn btn-success mt-3">Submit Insert / Overwrite Record</button>
                 </form>
             </div>
         </div>
     </div>
-    <script>
-    function toggleFormFields() {
-        const selected = document.getElementById("tableSelector").value;
-        const groups = document.querySelectorAll(".insert-group");
-        
-        groups.forEach(group => {
-            const isMatch = group.id === "fields-" + selected.replace(/\s+/g, '-');
-            group.style.display = isMatch ? "block" : "none";
-            // Disable inactive inputs so their empty values aren't submitted
-            const inputs = group.querySelectorAll("input, select");
-            inputs.forEach(input => input.disabled = !isMatch);
-        });
-    }
-    document.addEventListener("DOMContentLoaded", toggleFormFields);
-    </script>
+    {% endif %}
+
 </div>
+
+<script>
+function toggleFormFields() {
+    const selector = document.getElementById("tableSelector");
+    if (!selector) return;
+    const selected = selector.value;
+    const groups = document.querySelectorAll(".insert-group");
+    
+    groups.forEach(group => {
+        const isMatch = group.id === "fields-" + selected.replace(/\s+/g, '-');
+        group.style.display = isMatch ? "block" : "none";
+        const inputs = group.querySelectorAll("input, select");
+        inputs.forEach(input => input.disabled = !isMatch);
+    });
+}
+document.addEventListener("DOMContentLoaded", toggleFormFields);
+</script>
 {% endblock %}
