@@ -54,7 +54,8 @@ class DataManager:
         }
         if view_name not in valid_views:
             raise ValueError("Invalid view identifier.")
-    #When recieve from SQL the table header needs to be remap
+
+        # Header remapping (handles both channel_title and channel_name)
         rename_mappings = {
             "category_views": {
                 "category_name": "Category Name",
@@ -64,7 +65,7 @@ class DataManager:
                 "share_of_all_views_pct": "Share of Views (%)"
             },
             "channel_performance": {
-                "channel_id": "Channel ID",
+                "channel_title": "Channel Name",
                 "channel_name": "Channel Name",
                 "video_count": "Video Count",
                 "total_views": "Total Views",
@@ -72,14 +73,12 @@ class DataManager:
                 "top_video_views": "Top Video Views"
             },
             "video_reach": {
-                "video_id": "Video ID",
                 "video_title": "Video Title",
                 "countries": "Countries Reached",
                 "country_list": "Country List",
                 "trending_records": "Trending Records"
             },
             "reaction_ratios": {
-                "video_id": "Video ID",
                 "video_title": "Video Title",
                 "views": "Views",
                 "Views": "Views",
@@ -95,8 +94,15 @@ class DataManager:
         conn = cls.get_pg_connection()
         try:
             df = pd.read_sql(valid_views[view_name], conn)
-            if not df.empty and view_name in rename_mappings:
-                df = df.rename(columns=rename_mappings[view_name])
+            if not df.empty:
+                # Remove technical IDs so viewers only see consumer-facing fields
+                cols_to_drop = [col for col in ["channel_id", "video_id"] if col in df.columns]
+                if cols_to_drop:
+                    df = df.drop(columns=cols_to_drop)
+
+                # Rename columns according to mapping
+                if view_name in rename_mappings:
+                    df = df.rename(columns=rename_mappings[view_name])
             return df
         finally:
             conn.close()
