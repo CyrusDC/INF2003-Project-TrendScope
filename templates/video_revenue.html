@@ -2,7 +2,6 @@
 
 {% block content %}
 
-<!-- Page Header -->
 <div class="d-flex justify-content-between align-items-center mb-4">
     <h3>MongoDB Revenue & Tier Analytics</h3>
     <a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary">
@@ -10,12 +9,11 @@
     </a>
 </div>
 
-<!-- Controls Card -->
 <div class="card shadow-sm p-4 mb-4">
     <h5 class="mb-3">Filter & Run Aggregations</h5>
     
     <div class="row g-3">
-        <!-- 1. Filter by Creator Tier -->
+        <!-- Tier filter -->
         <div class="col-md-4">
             <form action="{{ url_for('video_revenue') }}" method="GET">
                 <input type="hidden" name="action" value="tier">
@@ -32,7 +30,7 @@
             </form>
         </div>
 
-        <!-- 2. Aggregation Pipeline Buttons -->
+        <!-- One button per aggregation -->
         <div class="col-md-8 d-flex align-items-end gap-2 flex-wrap">
             <a href="{{ url_for('video_revenue', action='country') }}" class="btn btn-success flex-fill">
                 Revenue by Country
@@ -50,7 +48,6 @@
     </div>
 </div>
 
-<!-- Results Area -->
 {% if error %}
     <div class="alert alert-danger">
         {{ error }}
@@ -145,7 +142,7 @@
                         <tbody>
                             {% for item in results %}
                             <tr>
-                                <td><strong>{{ item.country_code or item._id }}</strong></td>
+                                <td><strong>{{ item.country_code }}</strong></td>
                                 <td>${{ "{:,.2f}".format(item.total_estimated_revenue|float) if item.total_estimated_revenue is not none else "0.00" }}</td>
                             </tr>
                             {% endfor %}
@@ -172,11 +169,11 @@
                             {% for item in results %}
                             <tr>
                                 <td>
-                                    <strong>{{ item.category_name or ('Category ' ~ (item.category_id or item._id)) }}</strong> 
-                                    <span class="text-muted small">(ID: {{ item.category_id or item._id }})</span>
+                                    <strong>{{ item.category_name or ('Category ' ~ item.category_id) }}</strong> 
+                                    <span class="text-muted small">(ID: {{ item.category_id }})</span>
                                 </td>
                                 <td class="text-end pe-4 fw-bold text-primary">
-                                    {{ "{:,}".format((item.total_videos if item.total_videos is defined and item.total_videos is not none else item.count)|int) }}
+                                    {{ "{:,}".format(item.total_videos|int) }}
                                 </td>
                             </tr>
                             {% endfor %}
@@ -216,11 +213,11 @@
                             <tr>
                                 <td>
                                     <span class="badge 
-                                        {% if (row.creator_tier or row._id)|lower == 'mega' %}bg-danger
-                                        {% elif (row.creator_tier or row._id)|lower == 'large' %}bg-primary
-                                        {% elif (row.creator_tier or row._id)|lower == 'medium' %}bg-info text-dark
+                                        {% if row.creator_tier|lower == 'mega' %}bg-danger
+                                        {% elif row.creator_tier|lower == 'large' %}bg-primary
+                                        {% elif row.creator_tier|lower == 'medium' %}bg-info text-dark
                                         {% else %}bg-secondary{% endif %} px-3 py-2 fs-6">
-                                        {{ (row.creator_tier or row._id)|capitalize }}
+                                        {{ (row.creator_tier or 'Unknown')|capitalize }}
                                     </span>
                                 </td>
                                 <td class="fw-bold">{{ "{:,}".format(row.total_videos|int) }}</td>
@@ -252,18 +249,22 @@
                 <div class="alert alert-warning">No comparative tier data found in collection.</div>
             {% endif %}
 
-        <!-- Head-to-Head Video Tier Comparison Form -->
+            <!-- Head-to-head comparison of two videos -->
             <hr class="my-4">
             <h5 class="mb-1">Head-to-Head Video Comparison (Across Tiers)</h5>
             <p class="text-muted">
                 Filter and select two videos across different tiers (e.g. Mega vs Small) to directly compare their earnings.
             </p>
 
+            {% if video_error %}
+                <div class="alert alert-warning">{{ video_error }}</div>
+            {% endif %}
+
             <form action="{{ url_for('video_revenue') }}" method="GET" class="p-3 mb-4 bg-light rounded border">
                 <input type="hidden" name="action" value="compare">
 
                 <div class="row g-3">
-                    <!-- VIDEO A SELECTION -->
+                    <!-- Video A -->
                     <div class="col-md-6 border-end pe-md-3">
                         <label class="form-label small fw-bold text-primary">Video A Filter & Selection</label>
                         <div class="input-group mb-2">
@@ -288,7 +289,7 @@
                         </select>
                     </div>
 
-                    <!-- VIDEO B SELECTION -->
+                    <!-- Video B -->
                     <div class="col-md-6 ps-md-3">
                         <label class="form-label small fw-bold text-info">Video B Filter & Selection</label>
                         <div class="input-group mb-2">
@@ -321,12 +322,10 @@
                 </div>
             </form>
 
-            <!-- Error Banner -->
             {% if head_to_head_error %}
                 <div class="alert alert-warning">{{ head_to_head_error }}</div>
             {% endif %}
 
-            <!-- Comparison Results Table -->
             {% if head_to_head %}
                 {% set va = head_to_head.video_a %}
                 {% set vb = head_to_head.video_b %}
@@ -340,8 +339,8 @@
                         <thead class="table-dark">
                             <tr>
                                 <th>Metric</th>
-                                <th class="w-40 text-primary">Video A</th>
-                                <th class="w-40 text-info">Video B</th>
+                                <th class="text-primary">Video A</th>
+                                <th class="text-info">Video B</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -388,7 +387,6 @@
                 <span class="badge bg-danger px-3 py-2">Nested Array $unwind & $group</span>
             </div>
 
-            <!-- Filter Controls -->
             <form action="{{ url_for('video_revenue') }}" method="GET" class="row g-2 mb-4 bg-light p-3 rounded border">
                 <input type="hidden" name="action" value="claims">
                 <div class="col-md-5">
@@ -453,12 +451,12 @@
                 <div class="alert alert-warning mb-0">No copyright claims matched the selected filters.</div>
             {% endif %}
 
-        {% endif %} <!-- End of action_type sub-cases -->
+        {% endif %}
 
     </div>
-{% endif %} <!-- End of main elif action_type block -->
+{% endif %}
 
-<!-- Video Stats Modal -->
+<!-- Video details pop-up, filled in by static/js/video_revenue.js -->
 <div class="modal fade" id="videoStatsModal" tabindex="-1" aria-labelledby="videoStatsModalLabel" aria-hidden="true">
   <div class="modal-dialog modal-lg modal-dialog-centered">
     <div class="modal-content">
