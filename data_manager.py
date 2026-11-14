@@ -1,13 +1,101 @@
 import os
+from contextlib import contextmanager
+
+import pandas as pd
 import psycopg2
 import pymongo
-import pandas as pd
 from dotenv import load_dotenv
 
 load_dotenv()
 
+
+# One upsert call per table. Single inserts and bulk uploads share these, so the
+# parameter names are the column names that the validators in LogicManager return.
+UPSERT_SQL = {
+    "Category": """
+        SELECT public.upsert_category(%(category_id)s::integer, %(category_name)s::text);
+    """,
+    "Channel": """
+        SELECT public.upsert_channel(%(channel_id)s::integer, %(channel_title)s::text);
+    """,
+    "Country": """
+        SELECT public.upsert_country(%(country_code)s::text, %(country_name)s::text);
+    """,
+    "Video": """
+        SELECT public.upsert_video(
+            %(video_id)s::text, %(title)s::text, %(publish_time)s::timestamptz,
+            %(tag_count)s::integer, %(channel_id)s::integer, %(category_id)s::integer);
+    """,
+    "Channel Stats": """
+        SELECT public.upsert_channel_stats(
+            %(channel_id)s::integer, %(country_code)s::text, %(subscriber)s::bigint,
+            %(video_views)s::bigint, %(uploads)s::integer, %(created_date)s::date,
+            %(video_views_last_30_days)s::bigint, %(subscribers_last_30_days)s::bigint);
+    """,
+    "Trending Record": """
+        SELECT public.upsert_trending_record(
+            %(record_id)s::integer, %(video_id)s::text, %(country_code)s::text,
+            %(trending_date)s::date, %(views)s::bigint, %(likes)s::bigint,
+            %(dislikes)s::bigint, %(comment_count)s::bigint);
+    """,
+}
+
+READ_SQL = {
+    "Category": "SELECT * FROM read_category(%s);",
+    "Channel": "SELECT * FROM read_channel(%s);",
+    "Country": "SELECT * FROM read_country(%s::text);",
+    "Video": "SELECT * FROM read_video(%s::text);",
+    "Channel Stats": "SELECT * FROM read_channel_stats(%s);",
+    "Trending Record": "SELECT * FROM read_trending_record(%s);",
+}
+
+# delete_video and delete_channel remove their dependent rows inside the function.
+# Category and Country have no cascade, so the foreign keys block a delete that is still in use.
+DELETE_SQL = {
+    "Category": "SELECT public.delete_category(%s);",
+    "Channel": "SELECT public.delete_channel(%s);",
+    "Country": "SELECT public.delete_country(%s::text);",
+    "Video": "SELECT public.delete_video(%s::text);",
+    "Trending Record": "SELECT public.delete_trending_record(%s);",
+}
+
+ANALYTICAL_VIEWS = {
+    "category_views": "SELECT * FROM get_category_views();",
+    "channel_performance": "SELECT * FROM get_channel_performance();",
+    "video_reach": "SELECT * FROM get_video_reach();",
+    "reaction_ratios": "SELECT * FROM get_video_reaction_ratios();",
+}
+
+# The SQL functions return snake_case names; these are the headers shown on the dashboard.
+COLUMN_LABELS = {
+    "category_name": "Category Name",
+    "channel_title": "Channel Name",
+    "video_title": "Video Title",
+    "video_count": "Video Count",
+    "total_views": "Total Views",
+    "avg_views_per_video": "Avg Views / Video",
+    "share_of_all_views_pct": "Share of Views (%)",
+    "top_video_views": "Top Video Views",
+    "countries": "Countries Reached",
+    "country_list": "Country List",
+    "trending_records": "Trending Records",
+    "views": "Views",
+    "likes": "Likes",
+    "dislikes": "Dislikes",
+    "dislike_percentage": "Dislike Rate (%)",
+    "likes_per_dislike": "Likes Per Dislike",
+}
+
+# A video's ad revenue is the sum of its per-country estimates. Sponsorship is stored
+# once in the summary and is missing for videos without a sponsor.
+AD_REVENUE = {"$sum": "$revenue_by_country.estimated_gross_usd"}
+SPONSORSHIP = {"$ifNull": ["$revenue_summary.total_sponsorship_usd", 0]}
+
+
 class DataManager:
-    """Handles raw database connections, queries, transactions, and rollbacks."""
+    """All database access: PostgreSQL through psycopg2 and MongoDB through pymongo."""
+
+    _mongo_client = None
 
     @staticmethod
     def get_pg_connection():
@@ -16,406 +104,168 @@ class DataManager:
             port=os.getenv("PG_PORT"),
             dbname=os.getenv("PG_DBNAME"),
             user=os.getenv("PG_USER"),
-            password=os.getenv("PG_PASSWORD")
+            password=os.getenv("PG_PASSWORD"),
         )
 
-    @staticmethod
-    def get_mongo_collection(collection_name="revenue"):
-        client = pymongo.MongoClient(os.getenv("MONGO_URI"))
-        db = client[os.getenv("MONGO_DB", "youtube_nosql")]
+    @classmethod
+    def get_mongo_collection(cls, collection_name="revenue"):
+        # MongoClient keeps its own connection pool, so we create it once and reuse it
+        # instead of doing a new handshake with Atlas on every query.
+        if cls._mongo_client is None:
+            cls._mongo_client = pymongo.MongoClient(os.getenv("MONGO_URI"))
+        db = cls._mongo_client[os.getenv("MONGO_DB", "youtube_nosql")]
         return db[collection_name]
 
     @classmethod
-    def _execute_transaction(cls, query, params):
+    @contextmanager
+    def _pg_cursor(cls, commit=False):
+        """Hand out a cursor and always close the connection afterwards.
+
+        With commit=True everything done inside the block is one transaction:
+        it is committed at the end, or rolled back if anything raises.
+        """
         conn = cls.get_pg_connection()
-        cur = conn.cursor()
         try:
-            cur.execute(query, params)
-            result = cur.fetchone()[0]
-            conn.commit()
-            return result
-        except Exception as e:
+            with conn.cursor() as cur:
+                yield cur
+            if commit:
+                conn.commit()
+        except Exception:
             conn.rollback()
-            raise e
+            raise
         finally:
-            cur.close()
             conn.close()
 
-    # ------------------------------------------------------------------
-    # ANALYTICAL VIEWS & SEARCH
-    # ------------------------------------------------------------------
+    @classmethod
+    def _query_df(cls, sql, params=None):
+        with cls._pg_cursor() as cur:
+            cur.execute(sql, params)
+            columns = [col[0] for col in cur.description]
+            # coerce_float turns NUMERIC results into floats, same as pd.read_sql does
+            return pd.DataFrame.from_records(cur.fetchall(), columns=columns, coerce_float=True)
+
+    # PostgreSQL: dashboard and search
+
     @classmethod
     def fetch_analytical_view(cls, view_name):
-        valid_views = {
-            "category_views": "SELECT * FROM get_category_views();",
-            "channel_performance": "SELECT * FROM get_channel_performance();",
-            "video_reach": "SELECT * FROM get_video_reach();",
-            "reaction_ratios": "SELECT * FROM get_video_reaction_ratios();"
-        }
-        if view_name not in valid_views:
+        if view_name not in ANALYTICAL_VIEWS:
             raise ValueError("Invalid view identifier.")
 
-        # Header remapping (handles both channel_title and channel_name)
-        rename_mappings = {
-            "category_views": {
-                "category_name": "Category Name",
-                "video_count": "Video Count",
-                "total_views": "Total Views",
-                "avg_views_per_video": "Avg Views / Video",
-                "share_of_all_views_pct": "Share of Views (%)"
-            },
-            "channel_performance": {
-                "channel_title": "Channel Name",
-                "channel_name": "Channel Name",
-                "video_count": "Video Count",
-                "total_views": "Total Views",
-                "avg_views_per_video": "Avg Views / Video",
-                "top_video_views": "Top Video Views"
-            },
-            "video_reach": {
-                "video_title": "Video Title",
-                "countries": "Countries Reached",
-                "country_list": "Country List",
-                "trending_records": "Trending Records"
-            },
-            "reaction_ratios": {
-                "video_title": "Video Title",
-                "views": "Views",
-                "Views": "Views",
-                "likes": "Likes",
-                "Likes": "Likes",
-                "dislikes": "Dislikes",
-                "Dislikes": "Dislikes",
-                "dislike_percentage": "Dislike Rate (%)",
-                "likes_per_dislike": "Likes Per Dislike"
-            }
-        }
-        
-        conn = cls.get_pg_connection()
-        try:
-            df = pd.read_sql(valid_views[view_name], conn)
-            if not df.empty:
-                # Remove technical IDs so viewers only see consumer-facing fields
-                cols_to_drop = [col for col in ["channel_id", "video_id"] if col in df.columns]
-                if cols_to_drop:
-                    df = df.drop(columns=cols_to_drop)
-
-                # Rename columns according to mapping
-                if view_name in rename_mappings:
-                    df = df.rename(columns=rename_mappings[view_name])
-            return df
-        finally:
-            conn.close()
-
-
-    # ------------------------------------------------------------------
-    # INDIVIDUAL RELATIONAL CRUD (UPSERT BEHAVIOR)
-    # ------------------------------------------------------------------
-    @classmethod
-    def _execute_insert(cls, query, params):
-        conn = cls.get_pg_connection()
-        try:
-            with conn.cursor() as cur:
-                cur.execute(query, params)
-            conn.commit()
-            return True
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
+        df = cls._query_df(ANALYTICAL_VIEWS[view_name])
+        # Viewers only need names and titles, not the internal IDs
+        df = df.drop(columns=["channel_id", "video_id"], errors="ignore")
+        return df.rename(columns=COLUMN_LABELS)
 
     @classmethod
-    def insert_category(cls, cat_id, cat_name):
-        return cls._execute_insert(
-            "SELECT public.upsert_category(%s, %s::text);",
-            (cat_id, cat_name)
-        )
-
-
-    @classmethod
-    def insert_channel(cls, chan_id, chan_title):
-        return cls._execute_insert(
-            "SELECT public.upsert_channel(%s, %s::text);",
-            (chan_id, chan_title)
-        )
-
+    def get_filter_dropdown_options(cls):
+        with cls._pg_cursor() as cur:
+            cur.execute("SELECT category_id, category_name FROM public.get_category_options();")
+            categories = [{"category_id": cid, "category_name": name} for cid, name in cur.fetchall()]
+            cur.execute("SELECT country_code, country_name FROM public.get_country_options();")
+            countries = [{"country_code": code, "country_name": name} for code, name in cur.fetchall()]
+        return categories, countries
 
     @classmethod
-    def insert_country(cls, code, name):
-        return cls._execute_insert(
-            "SELECT public.upsert_country(%s::text, %s::text, %s);",
-            (code.upper(), name)
-        )
-
-
-    @classmethod
-    def insert_video(
-        cls, video_id, title, pub_dt, tag_count, chan_id, cat_id
-    ):
-        return cls._execute_insert(
-            """
-            SELECT public.upsert_video(%s::text, %s::text, %s, %s, %s, %s);
-            """,
-            (video_id, title, pub_dt, tag_count, chan_id, cat_id)
-        )
-
-
-    @classmethod
-    def insert_channel_stats(
-        cls, chan_id, c_code, rank, sub, views, uploads, dt_val, v30, s30
-    ):
-        return cls._execute_insert(
-            """
-            SELECT public.upsert_channel_stats(%s, %s::text, %s, %s, %s, %s, %s, %s, %s);
-            """,
-            (
-                chan_id, c_code.upper(), rank, sub, views, uploads, dt_val, v30, s30
-            )
-        )
-
-
-    @classmethod
-    def insert_trending_record(
-        cls, rec_id, vid_id, c_code, t_date, views, likes, dislikes, comments
-    ):
-        return cls._execute_insert(
-            """
-            SELECT public.upsert_trending_record(%s, %s::text, %s::text, %s, %s, %s, %s, %s);
-            """,
-            (
-                rec_id, vid_id, c_code.upper(), t_date, views, likes, dislikes, comments
-            )
-        )
-
-    # ------------------------------------------------------------------
-    # BULK UPSERT OPERATIONS (POSTGRESQL & MONGODB)
-    # ------------------------------------------------------------------
-    @classmethod
-    def bulk_upsert_postgres(cls, table, records):
+    def explore_trending_videos(cls, keyword=None, country=None, category_id=None,
+                                start_date=None, end_date=None):
+        sql = """
+            SELECT *
+            FROM public.explore_trending_videos(%s::text, %s::text, %s::integer, %s::date, %s::date)
         """
-        Import validated records using PostgreSQL upsert functions.
-        Commit the entire upload on success; roll back on failure.
+        return cls._query_df(sql, (keyword, country, category_id, start_date, end_date))
+
+    @classmethod
+    def get_metadata_lookup_maps(cls):
+        """Return id -> name dicts for videos, channels and categories.
+
+        MongoDB only stores the IDs, so these are used to show readable names
+        next to the revenue documents.
         """
-        queries = {
-            "Category": """
-                SELECT public.upsert_category(%(cat_id)s::integer,%(cat_name)s::text);
-            """,
-            "Channel": """
-                SELECT public.upsert_channel(%(chan_id)s::integer,%(chan_title)s::text);
-            """,
-            "Country": """
-                SELECT public.upsert_country(%(code)s::text,%(name)s::text);
-            """,
-            "Video": """
-                SELECT public.upsert_video(%(video_id)s::text,%(title)s::text,%(pub_dt)s::timestamptz,
-                %(tag_count)s::integer,%(channel_id)s::integer,%(category_id)s::integer);
-            """,
-            "Channel Stats": """
-                SELECT public.upsert_channel_stats(%(chan_id)s::integer,%(c_code)s::text,%(rank)s::integer,
-                %(sub)s::bigint,%(views)s::bigint,%(uploads)s::integer,%(dt_val)s::date,%(v30)s::bigint,
-                %(s30)s::bigint);
-            """,
-            "Trending Record": """
-                SELECT public.upsert_trending_record(%(rec_id)s::integer,%(vid_id)s::text,
-                %(c_code)s::text,%(t_date)s::date,%(views)s::bigint,%(likes)s::bigint,
-                %(dislikes)s::bigint,%(comments)s::bigint);
-            """
-        }
+        with cls._pg_cursor() as cur:
+            cur.execute("SELECT video_id, title FROM video;")
+            video_map = dict(cur.fetchall())
+            cur.execute("SELECT channel_id, channel_title FROM channel;")
+            channel_map = dict(cur.fetchall())
+            cur.execute("SELECT category_id, category_name FROM category;")
+            category_map = dict(cur.fetchall())
+        return video_map, channel_map, category_map
 
-        query = queries.get(table)
+    # PostgreSQL: insert, read, delete
 
-        if query is None:
+    @classmethod
+    def upsert_postgres(cls, table, records):
+        """Upsert a list of validated records and return how many were written.
+
+        The whole list is one transaction, so a bad row in a bulk upload
+        rolls back every row before it as well.
+        """
+        if table not in UPSERT_SQL:
             raise ValueError(f"Bulk import not supported for {table}")
 
-        if not records:
-            return 0
-        conn = cls.get_pg_connection()
-        try:
-            processed = 0
-            with conn.cursor() as cur:
-                for rec in records:
-                    cur.execute(query, rec)
-                    processed += 1
-            conn.commit()
-            return processed
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
+        with cls._pg_cursor(commit=True) as cur:
+            for record in records:
+                cur.execute(UPSERT_SQL[table], record)
+        return len(records)
 
     @classmethod
-    def bulk_upsert_mongo_revenue(cls, documents):
-        """
-        Bulk upsert list of dicts into MongoDB using UpdateOne(..., upsert=True).
-        Overwrites any document with the same video_id.
-        """
-        if not documents:
-            return 0
-        col = cls.get_mongo_collection("revenue")
-        ops = [
-            pymongo.UpdateOne(
-                {"video_id": doc.get("video_id")},
-                {"$set": doc},
-                upsert=True
-            )
+    def read_record(cls, table, key):
+        return cls._query_df(READ_SQL[table], (key,))
+
+    @classmethod
+    def delete_record(cls, table, key):
+        """Return True if a row was deleted, False if the key did not exist."""
+        with cls._pg_cursor(commit=True) as cur:
+            cur.execute(DELETE_SQL[table], (key,))
+            return cur.fetchone()[0]
+
+    # MongoDB: insert and delete
+
+    @classmethod
+    def upsert_revenue(cls, documents):
+        """Upsert revenue documents by video_id and return how many were written."""
+        operations = [
+            pymongo.UpdateOne({"video_id": doc["video_id"]}, {"$set": doc}, upsert=True)
             for doc in documents
         ]
-        res = col.bulk_write(ops)
-        return (res.upserted_count or 0) + (res.modified_count or 0) + (res.matched_count or 0)
-
-    # ------------------------------------------------------------------
-    # MONGO CRUD (SINGLE)
-    # ------------------------------------------------------------------
-    @classmethod
-    def insert_mongo_revenue(cls, document_dict):
-        """Single upsert into MongoDB based on video_id."""
-        col = cls.get_mongo_collection("revenue")
-        col.update_one(
-            {"video_id": document_dict.get("video_id")},
-            {"$set": document_dict},
-            upsert=True
-        )
-        return True
+        result = cls.get_mongo_collection().bulk_write(operations)
+        # matched_count already includes the modified documents, so only new ones are added on top
+        return result.upserted_count + result.matched_count
 
     @classmethod
-    def read_mongo_revenue(cls, video_id=None):
-        col = cls.get_mongo_collection("revenue")
-        query = {"video_id": video_id} if video_id else {}
-        cursor = col.find(query, {"_id": 0}).limit(100)
-        return pd.DataFrame(list(cursor))
+    def delete_revenue(cls, video_id):
+        result = cls.get_mongo_collection().delete_one({"video_id": video_id})
+        return result.deleted_count > 0
 
-    @classmethod
-    def delete_mongo_revenue(cls, video_id):
-        col = cls.get_mongo_collection("revenue")
-        res = col.delete_one({"video_id": video_id})
-        return res.deleted_count > 0
+    # MongoDB: revenue analytics
 
-    # ------------------------------------------------------------------
-    # READ & DELETE HELPERS
-    # ------------------------------------------------------------------
-
-    @classmethod
-    def read_record(cls, table, identifier):
-        identifier = str(identifier).strip()
-        if not identifier:
-            return pd.DataFrame()
-
-        try:
-            if table == "Category":
-                sql = "SELECT * FROM read_category(%s);"
-                params = (int(identifier),)
-            elif table == "Channel":
-                sql = "SELECT * FROM read_channel(%s);"
-                params = (int(identifier),)
-            elif table == "Country":
-                sql = "SELECT * FROM read_country(%s::text);"
-                params = (identifier.upper(),)
-            elif table == "Video":
-                sql = "SELECT * FROM read_video(%s::text);"
-                params = (identifier,)
-            elif table == "Channel Stats":
-                sql = "SELECT * FROM read_channel_stats(%s);"
-                params = (int(identifier),)
-            elif table == "Trending Record":
-                sql = "SELECT * FROM read_trending_record(%s);"
-                params = (int(identifier),)
-            else:
-                return pd.DataFrame()
-        except ValueError:
-            return pd.DataFrame()
-
-        conn = cls.get_pg_connection()
-        try:
-            return pd.read_sql(sql, conn, params=params)
-        finally:
-            conn.close()
-
-    @classmethod
-    def delete_record(cls, table, identifier):
-        if identifier is None:
-            return False
-
-        identifier = str(identifier).strip()
-
-        if not identifier:
-            return False
-
-        try:
-            if table == "Channel":
-                sql = "SELECT public.delete_channel(%s);"
-                params = (int(identifier),)
-
-            elif table == "Video":
-                sql = "SELECT public.delete_video(%s::text);"
-                params = (identifier,)
-
-            elif table == "Trending Record":
-                sql = "SELECT public.delete_trending_record(%s);"
-                params = (int(identifier),)
-
-            else:
-                raise ValueError(
-                    "Deletion is only supported for Channel, "
-                    "Video, and Trending Record."
-                )
-
-        except ValueError:
-            # Invalid numeric identifier or unsupported table.
-            return False
-
-        return cls._execute_transaction(sql, params)
-
-    # ------------------------------------------------------------------
-    # MONGODB ANALYTICS & LOOKUP
-    # ------------------------------------------------------------------
     @classmethod
     def aggregate_revenue_by_country(cls):
-        col = cls.get_mongo_collection("revenue")
         pipeline = [
             {"$unwind": "$revenue_by_country"},
             {"$group": {
                 "_id": "$revenue_by_country.country_code",
-                "total_estimated_revenue": {"$sum": "$revenue_by_country.estimated_gross_usd"}
+                "total_estimated_revenue": {"$sum": "$revenue_by_country.estimated_gross_usd"},
             }},
-            {"$sort": {"total_estimated_revenue": -1}}
+            {"$sort": {"total_estimated_revenue": -1}},
+            {"$project": {"_id": 0, "country_code": "$_id", "total_estimated_revenue": 1}},
         ]
-        results = list(col.aggregate(pipeline))
-        df = pd.DataFrame(results)
-        if not df.empty and "_id" in df.columns:
-            df = df.rename(columns={"_id": "country_code"})
-        return df
+        return list(cls.get_mongo_collection().aggregate(pipeline))
 
     @classmethod
     def aggregate_category_breakdown(cls):
-        col = cls.get_mongo_collection("revenue")
         pipeline = [
-            {"$group": {
-                "_id": "$category_id",
-                "total_videos": {"$sum": 1}
-            }},
-            {"$sort": {"total_videos": -1}}
+            {"$group": {"_id": "$category_id", "total_videos": {"$sum": 1}}},
+            {"$sort": {"total_videos": -1}},
+            {"$project": {"_id": 0, "category_id": "$_id", "total_videos": 1}},
         ]
-        results = list(col.aggregate(pipeline))
-        df = pd.DataFrame(results)
-        if not df.empty:
-            if "_id" in df.columns:
-                df = df.rename(columns={"_id": "category_id"})
-            if "total_videos" in df.columns:
-                df["total_videos"] = df["total_videos"].fillna(0).astype(int)
-        return df
-    
-    @classmethod
-    def filter_by_creator_tier(cls, tier="large", limit=None):
-        col = cls.get_mongo_collection("revenue")
-        pipeline = [
-            {"$match": {"creator_tier": {"$regex": f"^{tier.strip()}$", "$options": "i"}}}
-        ]
-        if limit:
-            pipeline.append({"$limit": limit})
+        return list(cls.get_mongo_collection().aggregate(pipeline))
 
-        pipeline.extend([
+    @classmethod
+    def filter_by_creator_tier(cls, tier):
+        pipeline = [
+            # Case-insensitive so older documents saved as "Large" still match.
+            # The tier comes from a fixed list in LogicManager, so it is safe inside a regex.
+            {"$match": {"creator_tier": {"$regex": f"^{tier}$", "$options": "i"}}},
             {"$project": {
                 "_id": 0,
                 "video_id": 1,
@@ -425,52 +275,21 @@ class DataManager:
                 "monetization": 1,
                 "sponsorships": 1,
                 "revenue_by_country": 1,
-                "ad_revenue": {
-                    "$reduce": {
-                        "input": {"$ifNull": ["$revenue_by_country", []]},
-                        "initialValue": 0.0,
-                        "in": {"$add": ["$$value", {"$ifNull": ["$$this.estimated_gross_usd", 0.0]}]}
-                    }
-                },
-                "sponsorship_revenue": {"$ifNull": ["$revenue_summary.total_sponsorship_usd", 0.0]},
-                "total_video_revenue": {
-                    "$add": [
-                        {
-                            "$reduce": {
-                                "input": {"$ifNull": ["$revenue_by_country", []]},
-                                "initialValue": 0.0,
-                                "in": {"$add": ["$$value", {"$ifNull": ["$$this.estimated_gross_usd", 0.0]}]}
-                            }
-                        },
-                        {"$ifNull": ["$revenue_summary.total_sponsorship_usd", 0.0]}
-                    ]
-                }
+                "ad_revenue": AD_REVENUE,
+                "sponsorship_revenue": SPONSORSHIP,
+                "total_video_revenue": {"$add": [AD_REVENUE, SPONSORSHIP]},
             }},
-            {"$sort": {"total_video_revenue": -1}}
-        ])
-        results = list(col.aggregate(pipeline))
-        return pd.DataFrame(results)
-
-    @classmethod
-    def get_video_stats_by_id(cls, video_id):
-        col = cls.get_mongo_collection("revenue")
-        doc = col.find_one({"video_id": str(video_id).strip()}, {"_id": 0})
-        return doc if doc else {}
+            {"$sort": {"total_video_revenue": -1}},
+        ]
+        return list(cls.get_mongo_collection().aggregate(pipeline))
 
     @classmethod
     def compare_creator_tiers(cls):
-        col = cls.get_mongo_collection("revenue")
         pipeline = [
             {"$project": {
                 "creator_tier": {"$toLower": "$creator_tier"},
                 "playback_rate": "$ads.monetized_playback_rate",
-                "video_revenue": {
-                    "$reduce": {
-                        "input": {"$ifNull": ["$revenue_by_country", []]},
-                        "initialValue": 0.0,
-                        "in": {"$add": ["$$value", {"$ifNull": ["$$this.estimated_gross_usd", 0.0]}]}
-                    }
-                }
+                "video_revenue": AD_REVENUE,
             }},
             {"$group": {
                 "_id": "$creator_tier",
@@ -478,126 +297,47 @@ class DataManager:
                 "total_tier_revenue": {"$sum": "$video_revenue"},
                 "avg_revenue_per_video": {"$avg": "$video_revenue"},
                 "max_single_video_revenue": {"$max": "$video_revenue"},
-                "avg_playback_rate": {"$avg": "$playback_rate"}
+                # videos without ads have no playback rate and are skipped by $avg
+                "avg_playback_rate": {"$avg": "$playback_rate"},
             }},
-            {"$sort": {"total_tier_revenue": -1}}
-        ]
-        results = list(col.aggregate(pipeline))
-        df = pd.DataFrame(results)
-        if not df.empty and "_id" in df.columns:
-            df = df.rename(columns={"_id": "creator_tier"})
-        return df
-    
-    @classmethod
-    def get_metadata_lookup_maps(cls):
-        conn = cls.get_pg_connection()
-        try:
-            videos_df = pd.read_sql("SELECT video_id, title FROM Video;", conn)
-            video_map = dict(zip(videos_df["video_id"], videos_df["title"]))
-
-            channels_df = pd.read_sql("SELECT channel_id, channel_title FROM Channel;", conn)
-            channel_map = dict(zip(channels_df["channel_id"], channels_df["channel_title"]))
-
-            categories_df = pd.read_sql("SELECT category_id, category_name FROM Category;", conn)
-            category_map = dict(zip(categories_df["category_id"], categories_df["category_name"]))
-
-            return video_map, channel_map, category_map
-        finally:
-            conn.close()
-
-    @classmethod
-    def get_video_comparison_item(cls, video_id):
-        """Fetches total revenue and core metrics for a single video document."""
-        col = cls.get_mongo_collection("revenue")
-        pipeline = [
-            {"$match": {"video_id": str(video_id).strip()}},
+            {"$sort": {"total_tier_revenue": -1}},
             {"$project": {
                 "_id": 0,
-                "video_id": 1,
-                "channel_id": 1,
-                "category_id": 1,
-                "creator_tier": {"$toLower": "$creator_tier"},
-                "playback_rate": "$ads.monetized_playback_rate",
-                "ad_gross_usd": {
-                    "$reduce": {
-                        "input": {"$ifNull": ["$revenue_by_country", []]},
-                        "initialValue": 0.0,
-                        "in": {"$add": ["$$value", {"$ifNull": ["$$this.estimated_gross_usd", 0.0]}]}
-                    }
-                },
-                "sponsorship_usd": {"$ifNull": ["$revenue_summary.total_sponsorship_usd", 0.0]},
-                "total_revenue": {
-                    "$add": [
-                        {
-                            "$reduce": {
-                                "input": {"$ifNull": ["$revenue_by_country", []]},
-                                "initialValue": 0.0,
-                                "in": {"$add": ["$$value", {"$ifNull": ["$$this.estimated_gross_usd", 0.0]}]}
-                            }
-                        },
-                        {"$ifNull": ["$revenue_summary.total_sponsorship_usd", 0.0]}
-                    ]
-                }
-            }}
+                "creator_tier": "$_id",
+                "total_videos": 1,
+                "total_tier_revenue": 1,
+                "avg_revenue_per_video": 1,
+                "max_single_video_revenue": 1,
+                "avg_playback_rate": 1,
+            }},
         ]
-        docs = list(col.aggregate(pipeline))
-        return docs[0] if docs else None
+        return list(cls.get_mongo_collection().aggregate(pipeline))
 
     @classmethod
-    def list_revenue_video_ids(cls, limit=500):
-        """Fetches up to limit video IDs and tiers from the MongoDB revenue collection."""
-        col = cls.get_mongo_collection("revenue")
-        cursor = col.find({}, {"_id": 0, "video_id": 1, "creator_tier": 1}).limit(limit)
-        return [{"video_id": d["video_id"], "creator_tier": (d.get("creator_tier") or "").lower()} for d in cursor if "video_id" in d]
-
-    @classmethod
-    def list_revenue_channel_ids(cls, limit=500):
-        """Fetches distinct channel IDs from the MongoDB revenue collection."""
-        col = cls.get_mongo_collection("revenue")
+    def get_copyright_claims_summary(cls, policy=None, outcome=None):
+        """Group copyright claims by claimant, optionally filtered by policy and dispute outcome."""
         pipeline = [
-            {"$group": {"_id": "$channel_id"}},
-            {"$match": {"_id": {"$ne": None}}},
-            {"$limit": limit}
-        ]
-        return [d["_id"] for d in col.aggregate(pipeline)]
-
-    #------------------------------------------------------------------
-    # Copyright Claims Summary
-    #------------------------------------------------------------------
-    @classmethod
-    def get_copyright_claims_summary(cls, policy_filter=None, outcome_filter=None):
-        """
-        Unwinds the nested copyright_claims array, filters by policy/outcome,
-        and aggregates claims grouped by claimant.
-        Satisfies Proposal 4.2: $unwind, $match, and $group.
-        """
-        col = cls.get_mongo_collection("revenue")
-
-        pipeline = [
-            # 1. Only include documents with copyright_claims
             {"$match": {"copyright_claims": {"$exists": True, "$ne": []}}},
-            # 2. Flatten the nested array of claims
-            {"$unwind": "$copyright_claims"}
+            # claims are a nested array, so each claim becomes its own row first
+            {"$unwind": "$copyright_claims"},
         ]
 
-        # 3. Dynamic $match for policy and dispute outcome filters
-        match_conditions = {}
-        if policy_filter and policy_filter != "all":
-            match_conditions["copyright_claims.policy"] = policy_filter
-        if outcome_filter and outcome_filter != "all":
-            match_conditions["copyright_claims.dispute_outcome"] = outcome_filter
+        filters = {}
+        if policy:
+            filters["copyright_claims.policy"] = policy
+        if outcome:
+            # only disputed claims have a "dispute" sub-document
+            filters["copyright_claims.dispute.outcome"] = outcome
+        if filters:
+            pipeline.append({"$match": filters})
 
-        if match_conditions:
-            pipeline.append({"$match": match_conditions})
-
-        # 4. Group by claimant to aggregate total disputes and claims
-        pipeline.extend([
+        pipeline += [
             {"$group": {
                 "_id": "$copyright_claims.claimant",
                 "total_claims": {"$sum": 1},
                 "policies": {"$addToSet": "$copyright_claims.policy"},
-                "dispute_outcomes": {"$addToSet": "$copyright_claims.dispute_outcome"},
-                "claimed_videos": {"$addToSet": "$video_id"}
+                "dispute_outcomes": {"$addToSet": "$copyright_claims.dispute.outcome"},
+                "claimed_videos": {"$addToSet": "$video_id"},
             }},
             {"$project": {
                 "_id": 0,
@@ -605,45 +345,46 @@ class DataManager:
                 "total_claims": 1,
                 "policies": 1,
                 "dispute_outcomes": 1,
-                "video_count": {"$size": "$claimed_videos"}
+                "video_count": {"$size": "$claimed_videos"},
             }},
-            {"$sort": {"total_claims": -1}}
-        ])
+            {"$sort": {"total_claims": -1}},
+        ]
+        return list(cls.get_mongo_collection().aggregate(pipeline))
 
-        results = list(col.aggregate(pipeline))
-        return pd.DataFrame(results)
-
-    @classmethod
-    def get_filter_dropdown_options(cls):
-        """Fetch dropdown options using PostgreSQL functions."""
-        conn = cls.get_pg_connection()
-        try:
-            categories = pd.read_sql(
-                "SELECT * FROM public.get_category_options();",
-                conn
-            )
-            countries = pd.read_sql(
-                "SELECT * FROM public.get_country_options();",
-                conn
-            )
-            return (
-                categories.to_dict(orient="records"),
-                countries.to_dict(orient="records")
-            )
-        finally:
-            conn.close()
+    # MongoDB: single video lookups
 
     @classmethod
-    def explore_trending_videos(cls, keyword=None, country=None, category_id=None, start_date=None, end_date=None):
-        sql = """
-            SELECT *
-            FROM public.explore_trending_videos
-                (%s::text, %s::text, %s::integer, %s::date, %s::date)
-        """
+    def get_video_stats_by_id(cls, video_id):
+        doc = cls.get_mongo_collection().find_one({"video_id": video_id}, {"_id": 0})
+        return doc or {}
 
-        params = (keyword, country, category_id, start_date, end_date)
-        conn = cls.get_pg_connection()
-        try:
-            return pd.read_sql(sql, conn, params=params)
-        finally:
-            conn.close()
+    @classmethod
+    def get_video_comparison_item(cls, video_id):
+        """Revenue totals for one video, or None if it has no revenue document."""
+        pipeline = [
+            {"$match": {"video_id": video_id}},
+            {"$project": {
+                "_id": 0,
+                "video_id": 1,
+                "channel_id": 1,
+                "category_id": 1,
+                "creator_tier": {"$toLower": "$creator_tier"},
+                "playback_rate": "$ads.monetized_playback_rate",
+                "ad_gross_usd": AD_REVENUE,
+                "sponsorship_usd": SPONSORSHIP,
+                "total_revenue": {"$add": [AD_REVENUE, SPONSORSHIP]},
+            }},
+        ]
+        docs = list(cls.get_mongo_collection().aggregate(pipeline))
+        return docs[0] if docs else None
+
+    @classmethod
+    def list_revenue_video_ids(cls, limit=500):
+        cursor = cls.get_mongo_collection().find(
+            {}, {"_id": 0, "video_id": 1, "creator_tier": 1}
+        ).limit(limit)
+        return [
+            {"video_id": doc["video_id"], "creator_tier": (doc.get("creator_tier") or "").lower()}
+            for doc in cursor
+            if "video_id" in doc
+        ]
