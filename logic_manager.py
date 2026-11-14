@@ -1,15 +1,19 @@
 import json
+import os
 import re
 from datetime import date, datetime
 
 import pandas as pd
+from dotenv import load_dotenv
 
 from data_manager import DataManager, DELETE_SQL, READ_SQL
 
-# Demo accounts for the two roles. Fine for a class project, not for a real deployment.
+load_dotenv()
+
+# Demo accounts for the two roles. The usernames and passwords come from .env.
 USERS = {
-    "admin": {"password": "admin123", "role": "admin"},
-    "viewer": {"password": "viewer123", "role": "viewer"},
+    os.getenv("ADMIN_USERNAME", "admin").lower(): {"password": os.getenv("ADMIN_PASSWORD"), "role": "admin"},
+    os.getenv("VIEWER_USERNAME", "viewer").lower(): {"password": os.getenv("VIEWER_PASSWORD"), "role": "viewer"},
 }
 
 # Tables whose primary key is an integer (the others use text keys)
@@ -43,7 +47,7 @@ class LogicManager:
     @staticmethod
     def authenticate(username, password):
         user = USERS.get(username.strip().lower())
-        if user and user["password"] == password:
+        if user and user["password"] and user["password"] == password:
             return True, user["role"]
         return False, None
 
