@@ -2,7 +2,7 @@
 {% block content %}
 <div class="row">
 
-    <!-- 2. ADMIN-FACING EXACT PK LOOKUP (SHOWN ONLY TO ADMIN) -->
+    <!-- Read one record by primary key -->
     {% if session.get('role') == 'admin' %}
     <div class="col-md-6 mb-4">
         <div class="card shadow-sm h-100">
@@ -18,7 +18,6 @@
                             <option value="Country">Country (by 2-char code)</option>
                             <option value="Video">Video (by 11-char ID)</option>
                             <option value="Channel Stats">Channel Stats (by ID)</option>
-                            <option value="Trending Record">Trending Record (by ID)</option>
                         </select>
                     </div>
                     <div class="mb-3">
@@ -34,7 +33,7 @@
         </div>
     </div>
 
-    <!-- 3. ADMIN-FACING DELETE RECORD -->
+    <!-- Delete one record -->
     <div class="col-md-6 mb-4">
         <div class="card shadow-sm border-danger h-100">
             <div class="card-header bg-danger text-white">Admin DB Maintenance: Delete Record</div>
@@ -60,7 +59,7 @@
         </div>
     </div>
 
-    <!-- 4. ADMIN-FACING BULK INSERT -->
+    <!-- Bulk upload from a CSV or JSON file -->
     <div class="col-12 mb-4">
         <div class="card shadow-sm border-primary">
             <div class="card-header bg-primary text-white d-flex justify-content-between align-items-center">
@@ -96,7 +95,7 @@
         </div>
     </div>
 
-    <!-- 5. ADMIN-FACING SINGLE ROW INSERT -->
+    <!-- Insert one record. Revenue documents are nested, so they go through the bulk JSON upload instead. -->
     <div class="col-12 mb-4">
         <div class="card shadow-sm border-success">
             <div class="card-header bg-success text-white">
@@ -114,12 +113,11 @@
                             <option value="Video" selected>Video</option>
                             <option value="Channel Stats">Channel Stats</option>
                             <option value="Trending Record">Trending Record</option>
-                            <option value="Revenue Record">Revenue Record (MongoDB)</option>
                         </select>
                     </div>
                     <hr>
 
-                    <!-- CATEGORY FIELDS -->
+                    <!-- Category -->
                     <div class="insert-group" id="fields-Category" style="display: none;">
                         <div class="row">
                             <div class="col-md-4 mb-2">
@@ -133,7 +131,7 @@
                         </div>
                     </div>
 
-                    <!-- CHANNEL FIELDS -->
+                    <!-- Channel -->
                     <div class="insert-group" id="fields-Channel" style="display: none;">
                         <div class="row">
                             <div class="col-md-4 mb-2">
@@ -147,7 +145,7 @@
                         </div>
                     </div>
 
-                    <!-- COUNTRY FIELDS -->
+                    <!-- Country -->
                     <div class="insert-group" id="fields-Country" style="display: none;">
                         <div class="row">
                             <div class="col-md-3 mb-2">
@@ -157,11 +155,11 @@
                             <div class="col-md-5 mb-2">
                                 <label class="form-label">Country Name</label>
                                 <input type="text" name="country_name" class="form-control">
-                            </div>           
+                            </div>
                         </div>
                     </div>
 
-                    <!-- VIDEO FIELDS -->
+                    <!-- Video -->
                     <div class="insert-group" id="fields-Video">
                         <div class="row">
                             <div class="col-md-4 mb-2">
@@ -195,7 +193,7 @@
                         </div>
                     </div>
 
-                    <!-- CHANNEL STATS FIELDS -->
+                    <!-- Channel Stats -->
                     <div class="insert-group" id="fields-Channel-Stats" style="display: none;">
                         <div class="row">
                             <div class="col-md-3 mb-2">
@@ -205,10 +203,6 @@
                             <div class="col-md-3 mb-2">
                                 <label class="form-label">Country Code</label>
                                 <input type="text" name="country_code" class="form-control" maxlength="2">
-                            </div>
-                            <div class="col-md-3 mb-2">
-                                <label class="form-label">Rank</label>
-                                <input type="number" name="rank" class="form-control" min="1">
                             </div>
                             <div class="col-md-3 mb-2">
                                 <label class="form-label">Subscribers</label>
@@ -237,7 +231,7 @@
                         </div>
                     </div>
 
-                    <!-- TRENDING RECORD FIELDS -->
+                    <!-- Trending Record -->
                     <div class="insert-group" id="fields-Trending-Record" style="display: none;">
                         <div class="row">
                             <div class="col-md-3 mb-2">
@@ -275,24 +269,6 @@
                         </div>
                     </div>
 
-                    <!-- REVENUE RECORD (MONGODB) -->
-                    <div class="insert-group" id="fields-Revenue-Record" style="display: none;">
-                        <div class="row">
-                            <div class="col-md-4 mb-2">
-                                <label class="form-label">Video ID (11 chars)</label>
-                                <input type="text" name="video_id" class="form-control" maxlength="11">
-                            </div>
-                            <div class="col-md-4 mb-2">
-                                <label class="form-label">Estimated Revenue ($)</label>
-                                <input type="number" step="0.01" name="estimated_revenue" class="form-control" min="0">
-                            </div>
-                            <div class="col-md-4 mb-2">
-                                <label class="form-label">Monetized Playbacks</label>
-                                <input type="number" name="monetized_playbacks" class="form-control" min="0">
-                            </div>
-                        </div>
-                    </div>
-
                     <button type="submit" class="btn btn-success mt-3">Submit Insert / Overwrite Record</button>
                 </form>
             </div>
@@ -303,17 +279,18 @@
 </div>
 
 <script>
+// Show only the field group for the selected table.
+// Several groups reuse the same input names (channel_id, country_code, views...),
+// so the hidden groups are disabled to keep their inputs out of the submitted form.
 function toggleFormFields() {
     const selector = document.getElementById("tableSelector");
     if (!selector) return;
-    const selected = selector.value;
-    const groups = document.querySelectorAll(".insert-group");
-    
-    groups.forEach(group => {
-        const isMatch = group.id === "fields-" + selected.replace(/\s+/g, '-');
-        group.style.display = isMatch ? "block" : "none";
-        const inputs = group.querySelectorAll("input, select");
-        inputs.forEach(input => input.disabled = !isMatch);
+
+    const activeId = "fields-" + selector.value.replace(/\s+/g, "-");
+    document.querySelectorAll(".insert-group").forEach(group => {
+        const isActive = group.id === activeId;
+        group.style.display = isActive ? "block" : "none";
+        group.querySelectorAll("input, select").forEach(input => input.disabled = !isActive);
     });
 }
 document.addEventListener("DOMContentLoaded", toggleFormFields);
