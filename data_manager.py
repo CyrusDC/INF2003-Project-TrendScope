@@ -105,6 +105,7 @@ class DataManager:
             dbname=os.getenv("PG_DBNAME"),
             user=os.getenv("PG_USER"),
             password=os.getenv("PG_PASSWORD"),
+            sslmode="require",  # refuse to connect without TLS
         )
 
     @classmethod
@@ -112,7 +113,7 @@ class DataManager:
         # MongoClient keeps its own connection pool, so we create it once and reuse it
         # instead of doing a new handshake with Atlas on every query.
         if cls._mongo_client is None:
-            cls._mongo_client = pymongo.MongoClient(os.getenv("MONGO_URI"))
+            cls._mongo_client = pymongo.MongoClient(os.getenv("MONGO_URI"), tls=True)
         db = cls._mongo_client[os.getenv("MONGO_DB", "youtube_nosql")]
         return db[collection_name]
 
