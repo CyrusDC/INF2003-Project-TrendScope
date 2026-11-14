@@ -1,278 +1,278 @@
-import io
 import json
-import pandas as pd
-import datetime as dt
 import re
-from data_manager import DataManager
-from datetime import date
+from datetime import date, datetime
+
+import pandas as pd
+
+from data_manager import DataManager, DELETE_SQL, READ_SQL
+
+# Demo accounts for the two roles. Fine for a class project, not for a real deployment.
+USERS = {
+    "admin": {"password": "admin123", "role": "admin"},
+    "viewer": {"password": "viewer123", "role": "viewer"},
+}
+
+# Tables whose primary key is an integer (the others use text keys)
+NUMERIC_KEY_TABLES = {"Category", "Channel", "Channel Stats", "Trending Record"}
+
+# What the success message calls the record that was just saved
+SAVED_LABELS = {
+    "Category": "Category '{category_name}'",
+    "Channel": "Channel '{channel_title}'",
+    "Country": "Country '{country_name}'",
+    "Video": "Video '{video_id}'",
+    "Channel Stats": "Channel Stats record",
+    "Trending Record": "Trending Record #{record_id}",
+    "Revenue Record": "MongoDB Revenue Record for '{video_id}'",
+}
+
+# The claims dropdown uses short labels, but MongoDB stores the full outcome names
+DISPUTE_OUTCOMES = {
+    "upheld": "claim_upheld",
+    "released": "released_to_creator",
+    "pending": "pending",
+}
 
 
 class LogicManager:
-    """Orchestrates business validation, security barriers, and coordinates with DataManager."""
+    """Validates input and applies the business rules before anything reaches DataManager."""
 
-    # Creator tiers from smallest to biggest. Edit to match the values in your data.
-    # Any tier not listed here is shown but left out of the "does bigger earn more?" check.
+    # Creator tiers from smallest to biggest, used to decide which video "should" earn more
     TIER_ORDER = ["small", "medium", "large", "mega"]
 
     @staticmethod
     def authenticate(username, password):
-        users = {
-            "admin": {"password": "admin123", "role": "admin"},
-            "viewer": {"password": "viewer123", "role": "viewer"}
-        }
-        user = users.get(username.strip().lower())
+        user = USERS.get(username.strip().lower())
         if user and user["password"] == password:
             return True, user["role"]
         return False, None
 
-    @staticmethod
-    def verify_role_access(role, required_role="admin"):
-        return role == required_role
+    # Validators. Each returns (True, cleaned_record) or (False, error_message).
+    # They take either a submitted form or one row of an uploaded file.
 
-    # ------------------------------------------------------------------
-    # VALIDATION LOGIC FOR ALL TABLES
-    # ------------------------------------------------------------------
     @staticmethod
     def validate_category(data):
         try:
-            cid = int(data.get("category_id", 0))
-            name = str(data.get("category_name", "")).strip()
-            if cid < 1:
-                return False, "Category ID must be a positive integer."
-            if not (1 <= len(name) <= 100):
-                return False, "Category Name must be 1 to 100 characters."
-            return True, {"cat_id": cid, "cat_name": name}
-        except Exception:
+            category_id = int(data.get("category_id", 0))
+        except (ValueError, TypeError):
             return False, "Invalid numeric or text values for Category."
+        name = str(data.get("category_name", "")).strip()
+
+        if category_id < 1:
+            return False, "Category ID must be a positive integer."
+        if not 1 <= len(name) <= 100:
+            return False, "Category Name must be 1 to 100 characters."
+        return True, {"category_id": category_id, "category_name": name}
 
     @staticmethod
     def validate_channel(data):
         try:
-            cid = int(data.get("channel_id", 0))
-            title = str(data.get("channel_title", "")).strip()
-            if cid < 1:
-                return False, "Channel ID must be a positive integer."
-            if not (1 <= len(title) <= 255):
-                return False, "Channel Title must be 1 to 255 characters."
-            return True, {"chan_id": cid, "chan_title": title}
-        except Exception:
+            channel_id = int(data.get("channel_id", 0))
+        except (ValueError, TypeError):
             return False, "Invalid numeric or text values for Channel."
+        title = str(data.get("channel_title", "")).strip()
+
+        if channel_id < 1:
+            return False, "Channel ID must be a positive integer."
+        if not 1 <= len(title) <= 255:
+            return False, "Channel Title must be 1 to 255 characters."
+        return True, {"channel_id": channel_id, "channel_title": title}
 
     @staticmethod
     def validate_country(data):
-        try:
-            code = str(data.get("country_code", "")).strip().upper()
-            name = str(data.get("country_name", "")).strip()
-            if len(code) != 2:
-                return False, "Country Code must be exactly 2 characters (e.g. US, SG)."
-            if not name:
-                return False, "Country Name cannot be empty."
-            return True, {"code": code, "name": name}
-        except Exception:
-            return False, "Invalid data types for Country."
+        code = str(data.get("country_code", "")).strip().upper()
+        name = str(data.get("country_name", "")).strip()
+
+        # Same rule as the CHECK constraint, so the user gets this message instead of a database error
+        if not re.fullmatch(r"[A-Z]{2}", code):
+            return False, "Country Code must be exactly 2 letters (e.g. US, SG)."
+        if not name:
+            return False, "Country Name cannot be empty."
+        return True, {"country_code": code, "country_name": name}
 
     @staticmethod
     def validate_video(data):
-        vid_id = str(data.get("video_id", "")).strip()
+        video_id = str(data.get("video_id", "")).strip()
         title = str(data.get("title", "")).strip()
-        pub_date = data.get("pub_date")
-        pub_time = data.get("pub_time", "00:00")
-        publish_time_raw = data.get("publish_time")
 
-        if len(vid_id) != 11:
+        if len(video_id) != 11:
             return False, "Video ID must be exactly 11 characters."
         if not title:
             return False, "Title cannot be blank."
 
         try:
             tag_count = int(data.get("tag_count", 0))
-            chan_id = int(data.get("channel_id", 0))
-            cat_id = int(data.get("category_id", 0))
-            if tag_count < 0 or chan_id < 1 or cat_id < 1:
+            channel_id = int(data.get("channel_id", 0))
+            category_id = int(data.get("category_id", 0))
+            if tag_count < 0 or channel_id < 1 or category_id < 1:
                 return False, "IDs must be >= 1, tag count must be non-negative."
 
-            if publish_time_raw:
-                pub_dt = pd.to_datetime(publish_time_raw).to_pydatetime()
-            elif pub_date:
-                pub_dt = dt.datetime.strptime(f"{pub_date} {pub_time}", "%Y-%m-%d %H:%M")
+            # Uploaded files give one publish_time column; the form gives a separate date and time
+            if data.get("publish_time"):
+                publish_time = pd.to_datetime(data.get("publish_time")).to_pydatetime()
+            elif data.get("pub_date"):
+                publish_time = datetime.strptime(
+                    f"{data.get('pub_date')} {data.get('pub_time', '00:00')}", "%Y-%m-%d %H:%M"
+                )
             else:
                 return False, "Publish time or date is required."
-
-            return True, {
-                "video_id": vid_id, "title": title, "pub_dt": pub_dt,
-                "tag_count": tag_count, "channel_id": chan_id, "category_id": cat_id
-            }
         except Exception:
             return False, "Invalid numerical inputs or timestamp format."
 
+        return True, {
+            "video_id": video_id,
+            "title": title,
+            "publish_time": publish_time,
+            "tag_count": tag_count,
+            "channel_id": channel_id,
+            "category_id": category_id,
+        }
+
     @staticmethod
     def validate_channel_stats(data):
-        try:
-            chan_id = int(data.get("channel_id", 0))
-            c_code = str(data.get("country_code", "")).strip().upper()
-            rank = int(data.get("global_rank", 0))
-            sub = int(data.get("subscriber", 0))
-            views = int(data.get("video_views", 0))
-            uploads = int(data.get("uploads", 0))
-            s_date = data.get("created_date")
-            v30 = int(data.get("video_views_last_30_days", 0))
-            s30 = int(data.get("subscribers_last_30_days", 0))
+        # The insert form and the CSV files name these columns differently, so accept either
+        def field(column_name, form_name, default=0):
+            return data.get(column_name, data.get(form_name, default))
 
-            if chan_id < 1 or rank < 1 or len(c_code) != 2 or not s_date:
-                return False, "Invalid identifiers, country code, or missing date."
-            return True, {
-                "chan_id": chan_id, "c_code": c_code, "rank": rank, "sub": sub,
-                "views": views, "uploads": uploads, "dt_val": s_date, "v30": v30, "s30": s30
+        try:
+            record = {
+                "channel_id": int(data.get("channel_id", 0)),
+                "country_code": str(data.get("country_code", "")).strip().upper(),
+                "subscriber": int(field("subscriber", "subscribers")),
+                "video_views": int(field("video_views", "views")),
+                "uploads": int(field("uploads", "total_uploads")),
+                "created_date": field("created_date", "stats_date", None),
+                "video_views_last_30_days": int(field("video_views_last_30_days", "views_30")),
+                "subscribers_last_30_days": int(field("subscribers_last_30_days", "subs_30")),
             }
-        except Exception:
+        except (ValueError, TypeError):
             return False, "Invalid numerical inputs in Channel Stats."
+
+        if record["channel_id"] < 1 or len(record["country_code"]) != 2 or not record["created_date"]:
+            return False, "Invalid identifiers, country code, or missing date."
+        return True, record
 
     @staticmethod
     def validate_trending_record(data):
+        def text(key):
+            value = data.get(key)
+            return "" if value is None else str(value).strip()
+
+        if not text("record_id"):
+            return False, "Record ID is required."
+
         try:
-            # Helper to safely parse ints with empty-string fallback to default
-            def to_int(val, default=0):
-                v = str(val).strip() if val is not None else ""
-                return int(v) if v != "" else default
+            record_id = int(text("record_id"))
+            # the count fields may be left blank, which we treat as 0
+            counts = {key: int(text(key) or 0) for key in ("views", "likes", "dislikes", "comment_count")}
+        except ValueError as e:
+            return False, f"Invalid numerical value entered: {e}"
 
-            rec_id_val = data.get("record_id")
-            if not rec_id_val or str(rec_id_val).strip() == "":
-                return False, "Record ID is required."
-            
-            rec_id = int(str(rec_id_val).strip())
-            vid_id = str(data.get("video_id", "")).strip()
-            c_code = str(data.get("country_code", "")).strip().upper()
-            t_date = data.get("trending_date", "").strip() if data.get("trending_date") else ""
+        video_id = text("video_id")
+        country_code = text("country_code").upper()
 
-            views = to_int(data.get("views"), 0)
-            likes = to_int(data.get("likes"), 0)
-            dislikes = to_int(data.get("dislikes"), 0)
-            comments = to_int(data.get("comment_count"), 0)
+        if record_id < 1:
+            return False, "Record ID must be an integer greater than 0."
+        if len(video_id) != 11:
+            return False, f"Video ID must be exactly 11 characters (you entered {len(video_id)})."
+        if len(country_code) != 2:
+            return False, f"Country Code must be 2 characters (e.g. US, SG). Received '{country_code}'."
+        if not text("trending_date"):
+            return False, "Trending Date is required."
 
-            if rec_id < 1:
-                return False, "Record ID must be an integer greater than 0."
-            if len(vid_id) != 11:
-                return False, f"Video ID must be exactly 11 characters (you entered {len(vid_id)})."
-            if len(c_code) != 2:
-                return False, f"Country Code must be 2 characters (e.g. US, SG). Received '{c_code}'."
-            if not t_date:
-                return False, "Trending Date is required."
+        return True, {
+            "record_id": record_id,
+            "video_id": video_id,
+            "country_code": country_code,
+            "trending_date": text("trending_date"),
+            **counts,
+        }
 
-            return True, {
-                "rec_id": rec_id, "vid_id": vid_id, "c_code": c_code,
-                "t_date": t_date, "views": views, "likes": likes,
-                "dislikes": dislikes, "comments": comments
-            }
-        except (ValueError, TypeError) as e:
-            return False, f"Invalid numerical value entered: {str(e)}"
-        except Exception as e:
-            return False, f"Validation error: {str(e)}"
-
-    @staticmethod
-    def validate_revenue_record(data):
+    @classmethod
+    def validate_revenue_record(cls, data):
         try:
-            vid_id = str(data.get("video_id", "")).strip()
-            if len(vid_id) != 11:
+            video_id = str(data.get("video_id", "")).strip()
+            if len(video_id) != 11:
                 return False, "Video ID must be exactly 11 characters."
 
-            # Whitelist creator tiers (matching TIER_ORDER)
             tier = str(data.get("creator_tier", "")).strip().lower()
-            valid_tiers = {"small", "medium", "large", "mega"}
-            if tier and tier not in valid_tiers:
-                return False, f"Creator tier must be one of: {', '.join(sorted(valid_tiers))}."
+            if tier and tier not in cls.TIER_ORDER:
+                return False, f"Creator tier must be one of: {', '.join(sorted(cls.TIER_ORDER))}."
 
-            # Verify non-negative values in nested country revenue if provided
             country_revenue = data.get("revenue_by_country", [])
             if isinstance(country_revenue, list):
                 for entry in country_revenue:
-                    usd = float(entry.get("estimated_gross_usd", 0.0))
-                    if usd < 0:
+                    if float(entry.get("estimated_gross_usd", 0.0)) < 0:
                         return False, "Estimated gross USD cannot be negative."
 
-            # Clean dict copy for MongoDB
-            clean_doc = dict(data)
-            clean_doc["video_id"] = vid_id
+            # MongoDB stores whatever we pass, so leave out its own _id and the two
+            # hidden fields the insert form uses to tell Flask what to do
+            doc = {key: value for key, value in dict(data).items() if key not in ("_id", "action", "table")}
+            doc["video_id"] = video_id
             if tier:
-                clean_doc["creator_tier"] = tier
-            clean_doc.pop("_id", None)
-            return True, clean_doc
-        except (ValueError, TypeError) as e:
-            return False, f"Invalid numerical inputs for Revenue Record: {str(e)}"
-        except Exception as e:
-            return False, f"Validation error: {str(e)}"
+                doc["creator_tier"] = tier
 
-    # ------------------------------------------------------------------
-    # SINGLE INSERT EXECUTION (UPSERT)
-    # ------------------------------------------------------------------
+            # Form values arrive as text; keep the numeric ones as numbers
+            for key, cast in (("estimated_revenue", float), ("monetized_playbacks", int)):
+                if doc.get(key) == "":
+                    del doc[key]
+                elif key in doc:
+                    doc[key] = cast(doc[key])
+            return True, doc
+        except (ValueError, TypeError) as e:
+            return False, f"Invalid numerical inputs for Revenue Record: {e}"
+        except Exception as e:
+            return False, f"Validation error: {e}"
+
+    @classmethod
+    def _validators(cls):
+        return {
+            "Category": cls.validate_category,
+            "Channel": cls.validate_channel,
+            "Country": cls.validate_country,
+            "Video": cls.validate_video,
+            "Channel Stats": cls.validate_channel_stats,
+            "Trending Record": cls.validate_trending_record,
+            "Revenue Record": cls.validate_revenue_record,
+        }
+
+    @staticmethod
+    def _save(table, records):
+        # Revenue documents live in MongoDB, every other table is in PostgreSQL
+        if table == "Revenue Record":
+            return DataManager.upsert_revenue(records)
+        return DataManager.upsert_postgres(table, records)
+
+    # Insert, read and delete for the admin page
+
     @classmethod
     def execute_insert(cls, table, payload):
-        try:
-            if table == "Category":
-                valid, res = cls.validate_category(payload)
-                if not valid: return False, res
-                DataManager.insert_category(res["cat_id"], res["cat_name"])
-                return True, f"Category '{res['cat_name']}' saved/overwritten successfully."
-
-            elif table == "Channel":
-                valid, res = cls.validate_channel(payload)
-                if not valid: return False, res
-                DataManager.insert_channel(res["chan_id"], res["chan_title"])
-                return True, f"Channel '{res['chan_title']}' saved/overwritten successfully."
-
-            elif table == "Country":
-                valid, res = cls.validate_country(payload)
-                if not valid: return False, res
-                DataManager.insert_country(res["code"], res["name"])
-                return True, f"Country '{res['name']}' saved/overwritten successfully."
-
-            elif table == "Video":
-                valid, res = cls.validate_video(payload)
-                if not valid: return False, res
-                DataManager.insert_video(
-                    res["video_id"], res["title"], res["pub_dt"],
-                    res["tag_count"], res["channel_id"], res["category_id"]
-                )
-                return True, f"Video '{res['video_id']}' saved/overwritten successfully."
-
-            elif table == "Channel Stats":
-                valid, res = cls.validate_channel_stats(payload)
-                if not valid: return False, res
-                DataManager.insert_channel_stats(
-                    res["chan_id"], res["c_code"], res["rank"], res["sub"],
-                    res["views"], res["uploads"], res["dt_val"], res["v30"], res["s30"]
-                )
-                return True, "Channel Stats record saved/overwritten successfully."
-
-            elif table == "Trending Record":
-                valid, res = cls.validate_trending_record(payload)
-                if not valid: return False, res
-                DataManager.insert_trending_record(
-                    res["rec_id"], res["vid_id"], res["c_code"], res["t_date"],
-                    res["views"], res["likes"], res["dislikes"], res["comments"]
-                )
-                return True, f"Trending Record #{res['rec_id']} saved/overwritten successfully."
-
-            elif table == "Revenue Record":
-                valid, res = cls.validate_revenue_record(payload)
-                if not valid: return False, res
-                DataManager.insert_mongo_revenue(res)
-                return True, f"MongoDB Revenue Record for '{res['video_id']}' saved/overwritten successfully."
-
+        validator = cls._validators().get(table)
+        if validator is None:
             return False, "Unsupported target table specified."
-        except Exception as e:
-            err_msg = str(e)
-            if "Constraint Violation:" in err_msg:
-                # Strip PostgreSQL internal context lines and show just the violation
-                clean_err = err_msg.split("CONTEXT:")[0].replace("ERROR:", "").strip()
-                return False, clean_err
-            return False, f"Database operation failure: {err_msg}"
 
-    # ------------------------------------------------------------------
-    # BULK FILE INSERTION (CSV & JSON)
-    # ------------------------------------------------------------------
+        valid, result = validator(payload)
+        if not valid:
+            return False, result
+
+        try:
+            cls._save(table, [result])
+        except Exception as e:
+            message = str(e)
+            if "Constraint Violation:" in message:
+                # Raised by our trigger. Keep its message and drop PostgreSQL's CONTEXT lines.
+                return False, message.split("CONTEXT:")[0].replace("ERROR:", "").strip()
+            return False, f"Database operation failure: {message}"
+
+        return True, SAVED_LABELS[table].format(**result) + " saved/overwritten successfully."
+
     @classmethod
     def execute_bulk_insert(cls, table, file_obj):
-        """Parses CSV or JSON file upload, validates each record, and performs upsert."""
+        """Validate every row of an uploaded CSV or JSON file, then upsert them all together."""
+        validator = cls._validators().get(table)
+        if validator is None:
+            return False, f"Unsupported table '{table}' for bulk insert."
+
         filename = file_obj.filename.lower()
         try:
             if filename.endswith(".csv"):
@@ -280,6 +280,7 @@ class LogicManager:
                     df = pd.read_csv(file_obj)
                     records = df.where(pd.notnull(df), None).to_dict(orient="records")
                 else:
+                    # Read everything as text so IDs keep their exact form; the validators do the conversion
                     df = pd.read_csv(file_obj, dtype=str, keep_default_na=False, encoding="utf-8-sig")
                     records = df.to_dict(orient="records")
             elif filename.endswith(".json"):
@@ -291,167 +292,164 @@ class LogicManager:
             if not records:
                 return False, "Uploaded file contains no rows or data."
 
-            validators = {
-                "Category": cls.validate_category,
-                "Channel": cls.validate_channel,
-                "Country": cls.validate_country,
-                "Video": cls.validate_video,
-                "Channel Stats": cls.validate_channel_stats,
-                "Trending Record": cls.validate_trending_record,
-                "Revenue Record": cls.validate_revenue_record
-            }
+            # Check every row first so a bad file is rejected before anything is written
+            cleaned = []
+            for row_number, row in enumerate(records, start=1):
+                valid, result = validator(row)
+                if not valid:
+                    return False, f"Row {row_number} failed validation: {result}"
+                cleaned.append(result)
 
-            validator = validators.get(table)
-            if not validator:
-                return False, f"Unsupported table '{table}' for bulk insert."
-
-            valid_records = []
-            for idx, r in enumerate(records, start=1):
-                is_valid, cleaned_or_err = validator(r)
-                if not is_valid:
-                    return False, f"Row {idx} failed validation: {cleaned_or_err}"
-                valid_records.append(cleaned_or_err)
-
-            # Route to MongoDB or PostgreSQL
+            count = cls._save(table, cleaned)
             if table == "Revenue Record":
-                count = DataManager.bulk_upsert_mongo_revenue(valid_records)
                 return True, f"Successfully processed/overwrote {count} document(s) in MongoDB Atlas."
-            else:
-                count = DataManager.bulk_upsert_postgres(table, valid_records)
-                return True, f"Successfully processed/overwrote {count} record(s) in PostgreSQL."
-
+            return True, f"Successfully processed/overwrote {count} record(s) in PostgreSQL."
         except Exception as e:
-            return False, f"Bulk import error: {str(e)}"
+            return False, f"Bulk import error: {e}"
 
     @staticmethod
-    def read_record(table, identifier):
-        valid_tables = {"Category", "Channel", "Country", "Video", "Channel Stats", "Trending Record",}
-
-        if table not in valid_tables:
-            raise ValueError("Invalid table selected.")
-
+    def _clean_key(table, identifier):
+        """Convert a typed-in primary key to the form the table expects."""
         identifier = str(identifier or "").strip()
-
         if not identifier:
             raise ValueError("Please enter a record ID.")
 
-        numeric_id_tables = {"Category", "Channel", "Channel Stats", "Trending Record",}
-
-        if table in numeric_id_tables:
+        if table in NUMERIC_KEY_TABLES:
             try:
-                identifier = str(int(identifier))
+                return int(identifier)
             except ValueError:
-                raise ValueError(
-                    "The record ID must be an integer."
-                ) from None
+                raise ValueError("The record ID must be an integer.") from None
+        if table == "Country":
+            return identifier.upper()
+        return identifier
 
-        elif table == "Country":
-            identifier = identifier.upper()
-
-        return DataManager.read_record(table, identifier)
-
+    @classmethod
+    def read_record(cls, table, identifier):
+        if table not in READ_SQL:
+            raise ValueError("Invalid table selected.")
+        return DataManager.read_record(table, cls._clean_key(table, identifier))
 
     @classmethod
     def execute_delete(cls, table, identifier):
+        identifier = str(identifier or "").strip()
         if not identifier:
             return False, "Primary key identifier must be provided."
+
         try:
             if table == "Revenue Record":
                 if len(identifier) != 11:
                     return False, "Video ID must be exactly 11 characters."
-                success = DataManager.delete_mongo_revenue(identifier)
+                deleted = DataManager.delete_revenue(identifier)
+            elif table in DELETE_SQL:
+                deleted = DataManager.delete_record(table, cls._clean_key(table, identifier))
             else:
-                success = DataManager.delete_record(table, identifier)
-            return (True, f"Record '{identifier}' deleted.") if success else (False, "Record not found.")
+                return False, f"Deletion is not supported for {table}."
+        except ValueError as e:
+            return False, str(e)
         except Exception as e:
-            return False, f"Integrity error: {str(e)}"
-        
+            # Usually a foreign key: the row is still referenced by another table
+            return False, f"Integrity error: {e}"
+
+        if deleted:
+            return True, f"Record '{identifier}' deleted."
+        return False, "Record not found."
+
+    # PostgreSQL dashboard and trending search
+
+    @staticmethod
+    def get_analytical_view(view_name):
+        df = DataManager.fetch_analytical_view(view_name)
+        # SQL NULLs become NaN in pandas, which the page would print as "nan"
+        records = df.astype(object).where(df.notna(), None).to_dict(orient="records")
+        return df.columns.tolist(), records
+
     @staticmethod
     def get_filter_dropdown_options():
         return DataManager.get_filter_dropdown_options()
 
     @staticmethod
-    def explore_trending_videos(keyword=None, country=None, category_id=None, start_date=None, end_date=None):
-        def clean_optional(value):
-            if value is None:
-                return None
-            value = str(value).strip()
-            return value if value else None
-
-        keyword = clean_optional(keyword)
-        country = clean_optional(country)
-        category_id = clean_optional(category_id)
-
-        if country and country.lower() == "all":
-            country = None
-        if category_id and category_id.lower() == "all":
-            category_id = None
-        if country is not None:
-            country = country.upper()
-
-            if not re.fullmatch(r"[A-Z]{2}", country):
-                raise ValueError(
-                    "Country code must contain two letters."
-                )
-
-        if category_id is not None:
-            try:
-                category_id = int(category_id)
-            except ValueError:
-                raise ValueError(
-                    "Category ID must be an integer."
-                ) from None
+    def explore_trending_videos(keyword=None, country=None, category_id=None,
+                                start_date=None, end_date=None):
+        # Empty boxes and the "all" option both mean "no filter", which the SQL function expects as NULL
+        def optional(value):
+            value = str(value).strip() if value is not None else ""
+            return None if value == "" or value.lower() == "all" else value
 
         def parse_date(value, label):
-            value = clean_optional(value)
+            value = optional(value)
             if value is None:
                 return None
             try:
                 return date.fromisoformat(value)
             except ValueError:
-                raise ValueError(
-                    f"{label} must use YYYY-MM-DD format."
-                ) from None
+                raise ValueError(f"{label} must use YYYY-MM-DD format.") from None
+
+        keyword = optional(keyword)
+        country = optional(country)
+        category_id = optional(category_id)
+
+        if country is not None:
+            country = country.upper()
+            if not re.fullmatch(r"[A-Z]{2}", country):
+                raise ValueError("Country code must contain two letters.")
+
+        if category_id is not None:
+            try:
+                category_id = int(category_id)
+            except ValueError:
+                raise ValueError("Category ID must be an integer.") from None
+
         start_date = parse_date(start_date, "Start date")
         end_date = parse_date(end_date, "End date")
-        if (
-            start_date is not None
-            and end_date is not None
-            and start_date > end_date
-        ):
-            raise ValueError(
-                "Start date cannot be later than end date."
-            )
-        return DataManager.explore_trending_videos(keyword=keyword, country=country, category_id=category_id, start_date=start_date, end_date=end_date
+        if start_date and end_date and start_date > end_date:
+            raise ValueError("Start date cannot be later than end date.")
+
+        return DataManager.explore_trending_videos(
+            keyword=keyword,
+            country=country,
+            category_id=category_id,
+            start_date=start_date,
+            end_date=end_date,
         )
 
-
-    # ------------------------------------------------------------------
-    # MONGODB VALIDATION
-    # ------------------------------------------------------------------
+    # MongoDB revenue analytics
 
     @staticmethod
-    def get_video_stats_by_id(video_id):
-        clean_id = str(video_id or "").strip()
-        if len(clean_id) != 11:
-            return {}
-        return DataManager.get_video_stats_by_id(clean_id)
-    
-    @staticmethod
-    def filter_by_creator_tier(tier="large", limit=None):
-        clean_tier = str(tier or "").strip().lower()
-        valid_tiers = {"small", "medium", "large", "mega"}
-        if clean_tier not in valid_tiers:
-            clean_tier = "large"
-        return DataManager.filter_by_creator_tier(clean_tier, limit)
+    def _add_names(rows):
+        """Add the title/name from PostgreSQL to rows that only carry MongoDB IDs."""
+        video_map, channel_map, category_map = DataManager.get_metadata_lookup_maps()
+        for row in rows:
+            if "video_id" in row:
+                row["video_title"] = video_map.get(row["video_id"], f"Video {row['video_id']}")
+            if "channel_id" in row:
+                row["channel_name"] = channel_map.get(row["channel_id"], f"Channel {row['channel_id']}")
+            if "category_id" in row:
+                row["category_name"] = category_map.get(row["category_id"], f"Category {row['category_id']}")
+        return rows
+
+    @classmethod
+    def clean_tier(cls, tier):
+        tier = str(tier or "").strip().lower()
+        return tier if tier in cls.TIER_ORDER else "large"
+
+    @classmethod
+    def filter_by_creator_tier(cls, tier="large"):
+        rows = DataManager.filter_by_creator_tier(cls.clean_tier(tier))
+        return cls._add_names(rows) if rows else rows
 
     @staticmethod
     def aggregate_revenue_by_country():
         return DataManager.aggregate_revenue_by_country()
 
-    @staticmethod
-    def aggregate_category_breakdown():
-        return DataManager.aggregate_category_breakdown()
+    @classmethod
+    def aggregate_category_breakdown(cls):
+        rows = DataManager.aggregate_category_breakdown()
+        try:
+            cls._add_names(rows)
+        except Exception:
+            # Without PostgreSQL the page still works and shows "Category <id>" instead of the name
+            pass
+        return rows
 
     @staticmethod
     def compare_creator_tiers():
@@ -459,96 +457,102 @@ class LogicManager:
 
     @staticmethod
     def get_copyright_claims_summary(policy_filter=None, outcome_filter=None):
-        return DataManager.get_copyright_claims_summary(policy_filter, outcome_filter)
+        policy = None if policy_filter in (None, "", "all") else policy_filter
+        outcome = None if outcome_filter in (None, "", "all") else outcome_filter
+        rows = DataManager.get_copyright_claims_summary(policy, DISPUTE_OUTCOMES.get(outcome, outcome))
+
+        # Show the same short labels as the dropdown
+        short_labels = {stored: short for short, stored in DISPUTE_OUTCOMES.items()}
+        for row in rows:
+            outcomes = [o for o in row.get("dispute_outcomes", []) if o]
+            row["dispute_outcomes"] = sorted(short_labels.get(o, o) for o in outcomes)
+            row["policies"] = sorted(row.get("policies", []))
+        return rows
 
     @staticmethod
-    def get_metadata_lookup_maps():
-        return DataManager.get_metadata_lookup_maps()
+    def get_video_stats_by_id(video_id):
+        video_id = str(video_id or "").strip()
+        if len(video_id) != 11:
+            return {}
 
-    @staticmethod
-    def validate_video_id(video_id):
-        vid = str(video_id or "").strip()
-        if len(vid) != 11:
-            raise ValueError("Video ID must be exactly 11 characters.")
-        return vid
+        stats = DataManager.get_video_stats_by_id(video_id)
+        if stats:
+            try:
+                video_map, channel_map, category_map = DataManager.get_metadata_lookup_maps()
+                stats["video_title"] = video_map.get(stats.get("video_id"), "Unknown Title")
+                stats["channel_name"] = channel_map.get(stats.get("channel_id"), "Unknown Channel")
+                stats["category_name"] = category_map.get(stats.get("category_id"), "Unknown Category")
+            except Exception:
+                # The revenue numbers are still worth showing if PostgreSQL is unreachable
+                pass
+        return stats
 
     @staticmethod
     def get_revenue_video_options(limit=500):
-        """Builds sorted video list with titles and tiers for the dropdown selectors."""
-        video_docs = DataManager.list_revenue_video_ids(limit)
+        """Videos that have a revenue document, sorted by title, for the video dropdowns."""
+        videos = DataManager.list_revenue_video_ids(limit)
         video_map, _, _ = DataManager.get_metadata_lookup_maps()
-        options = [
-            {
-                "video_id": item["video_id"],
-                "creator_tier": item["creator_tier"],
-                "title": video_map.get(item["video_id"], "")
-            }
-            for item in video_docs
-        ]
-        return sorted(options, key=lambda o: (o["title"] or o["video_id"]).lower())
-
-    @staticmethod
-    def get_revenue_channel_options(limit=500):
-        """Builds sorted channel list with titles for channel dropdown selectors."""
-        ids = DataManager.list_revenue_channel_ids(limit)
-        _, channel_map, _ = DataManager.get_metadata_lookup_maps()
-        options = [{"channel_id": c, "title": channel_map.get(c, "")} for c in ids]
-        return sorted(options, key=lambda o: (o["title"] or str(o["channel_id"])).lower())
+        for video in videos:
+            video["title"] = video_map.get(video["video_id"], "")
+        return sorted(videos, key=lambda v: (v["title"] or v["video_id"]).lower())
 
     @classmethod
     def compare_two_videos(cls, video_a_id, video_b_id):
-        """
-        Validates and compares two distinct videos across tiers and total earnings.
-        """
-        vid_a = cls.validate_video_id(video_a_id)
-        vid_b = cls.validate_video_id(video_b_id)
+        """Compare the revenue of two videos and say whether the result matches their tiers."""
+        video_ids = []
+        for video_id in (video_a_id, video_b_id):
+            video_id = str(video_id or "").strip()
+            if len(video_id) != 11:
+                raise ValueError("Video ID must be exactly 11 characters.")
+            video_ids.append(video_id)
 
-        if vid_a == vid_b:
+        if video_ids[0] == video_ids[1]:
             raise ValueError("Please select two different videos to compare.")
 
-        doc_a = DataManager.get_video_comparison_item(vid_a)
-        doc_b = DataManager.get_video_comparison_item(vid_b)
+        video_a = DataManager.get_video_comparison_item(video_ids[0])
+        video_b = DataManager.get_video_comparison_item(video_ids[1])
+        if not video_a:
+            raise ValueError(f"No revenue record found for Video A ({video_ids[0]}).")
+        if not video_b:
+            raise ValueError(f"No revenue record found for Video B ({video_ids[1]}).")
+        cls._add_names([video_a, video_b])
 
-        if not doc_a:
-            raise ValueError(f"No revenue record found for Video A ({vid_a}).")
-        if not doc_b:
-            raise ValueError(f"No revenue record found for Video B ({vid_b}).")
-
-        # Enrich with titles from PostgreSQL
-        video_map, channel_map, category_map = DataManager.get_metadata_lookup_maps()
-        for doc in (doc_a, doc_b):
-            vid = doc["video_id"]
-            doc["video_title"] = video_map.get(vid, f"Video {vid}")
-            doc["channel_name"] = channel_map.get(doc.get("channel_id"), f"Channel {doc.get('channel_id')}")
-            doc["category_name"] = category_map.get(doc.get("category_id"), f"Category {doc.get('category_id')}")
-
-        # Compute differences
-        diff_rev = doc_a["total_revenue"] - doc_b["total_revenue"]
-        higher_earner = "A" if diff_rev > 0 else ("B" if diff_rev < 0 else "Tie")
-
-        # Evaluate Tier impact
-        tier_rank = {t: i for i, t in enumerate(cls.TIER_ORDER)}
-        rank_a = tier_rank.get(doc_a["creator_tier"], -1)
-        rank_b = tier_rank.get(doc_b["creator_tier"], -1)
-
-        tier_comparison = None
-        if rank_a > rank_b:
-            if higher_earner == "A":
-                tier_verdict = f"Expected Outcome: Video A is in a higher tier ({doc_a['creator_tier'].capitalize()} vs {doc_b['creator_tier'].capitalize()}) and earned ${abs(diff_rev):,.2f} more."
-            else:
-                tier_verdict = f"Anomaly: Despite Video A being a higher tier ({doc_a['creator_tier'].capitalize()} vs {doc_b['creator_tier'].capitalize()}), Video B earned ${abs(diff_rev):,.2f} more."
-        elif rank_b > rank_a:
-            if higher_earner == "B":
-                tier_verdict = f"Expected Outcome: Video B is in a higher tier ({doc_b['creator_tier'].capitalize()} vs {doc_a['creator_tier'].capitalize()}) and earned ${abs(diff_rev):,.2f} more."
-            else:
-                tier_verdict = f"Anomaly: Despite Video B being a higher tier ({doc_b['creator_tier'].capitalize()} vs {doc_a['creator_tier'].capitalize()}), Video A earned ${abs(diff_rev):,.2f} more."
+        difference = video_a["total_revenue"] - video_b["total_revenue"]
+        amount = f"${abs(difference):,.2f}"
+        if difference > 0:
+            higher_earner = "A"
+        elif difference < 0:
+            higher_earner = "B"
         else:
-            tier_verdict = f"Both videos belong to the same tier ({doc_a['creator_tier'].capitalize()}). Revenue difference is ${abs(diff_rev):,.2f}."
+            higher_earner = "Tie"
+
+        # A tier we do not know about sits below all of the known ones
+        level = {tier: position for position, tier in enumerate(cls.TIER_ORDER)}
+        level_a = level.get(video_a["creator_tier"], -1)
+        level_b = level.get(video_b["creator_tier"], -1)
+        tier_a = video_a["creator_tier"].capitalize()
+        tier_b = video_b["creator_tier"].capitalize()
+
+        if level_a == level_b:
+            verdict = f"Both videos belong to the same tier ({tier_a}). Revenue difference is {amount}."
+        else:
+            # "top" is the video in the higher tier, which we expect to earn more
+            if level_a > level_b:
+                top, low, tiers = "A", "B", f"{tier_a} vs {tier_b}"
+            else:
+                top, low, tiers = "B", "A", f"{tier_b} vs {tier_a}"
+
+            if higher_earner == top:
+                verdict = f"Expected Outcome: Video {top} is in a higher tier ({tiers}) and earned {amount} more."
+            elif higher_earner == "Tie":
+                verdict = f"Video {top} is in a higher tier ({tiers}), but both videos earned the same amount."
+            else:
+                verdict = f"Anomaly: Despite Video {top} being a higher tier ({tiers}), Video {low} earned {amount} more."
 
         return {
-            "video_a": doc_a,
-            "video_b": doc_b,
-            "revenue_difference": abs(diff_rev),
+            "video_a": video_a,
+            "video_b": video_b,
+            "revenue_difference": abs(difference),
             "higher_earner": higher_earner,
-            "tier_verdict": tier_verdict
+            "tier_verdict": verdict,
         }
